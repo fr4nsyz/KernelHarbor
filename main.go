@@ -13,29 +13,36 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
+// match C struct exactly
+const MAX_ARGS = 20
+const ARG_LEN = 128
+
 type Event struct {
 	Pid      uint32
 	Comm     [16]byte
 	Filename [256]byte
+
+	Argc int32
+	Args [MAX_ARGS][ARG_LEN]byte
 }
 
 func main() {
-	// allow eBPF resources
+	// allow eBPF to lock memory
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
 
-	// load compiled objects
+	// load compiled eBPF objects
 	objs := tracerObjects{}
 	if err := loadTracerObjects(&objs, nil); err != nil {
 		log.Fatal(err)
 	}
 	defer objs.Close()
 
-	// attach to exec tracepoint
+	// attach to sys_enter_execve
 	tp, err := link.Tracepoint(
-		"sched",
-		"sched_process_exec",
+		"syscalls",
+		"sys_enter_execve",
 		objs.HandleExec,
 		nil,
 	)
@@ -76,10 +83,19 @@ func main() {
 			continue
 		}
 
-		fmt.Printf("PID: %d | COMM: %s | FILE: %s\n",
-			e.Pid,
-			bytes.TrimRight(e.Comm[:], "\x00"),
-			bytes.TrimRight(e.Filename[:], "\x00"),
-		)
+		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+		filename := string(bytes.TrimRight(e.Filename[:], "\x00"))
+
+		fmt.Printf("\nPID: %d | COMM: %s\n", e.Pid, comm)
+		fmt.Printf("EXEC: %s\n", filename)
+
+		fmt.Printf("ARGS (%d):\n", e.Argc)
+		for i := 0; i < int(e.Argc) && i < MAX_ARGS; i++ {
+			arg := string(bytes.TrimRight(e.Args[i][:], "\x00"))
+			if arg == "" {
+				continue
+			}
+			fmt.Printf("  [%d] %s\n", i, arg)
+		}
 	}
 }

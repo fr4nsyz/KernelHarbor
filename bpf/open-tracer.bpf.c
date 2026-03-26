@@ -11,9 +11,10 @@ struct event {
   u32 pid;              // the process ID of the process that is invoking the syscall
   char comm[16];        // the executable name of the process that is invoking the syscall
   char filename[256];   // the name of file that is being opened by the syscall
-  int flags;
-  bool mode_avail;
-  mode_t mode;
+  int flags;            // the flags indicating the file creation and file status the syscall is opening the file with
+  bool mode_avail;      // a boolean indicating if mode was provided to the syscall, and if anything is contained in event->mode
+  // NOTE: padding is inserted here to account for mode_avail being only a single byte
+  mode_t mode;          // the file mode bits related to permissions to be applied upon creating a new file
 };
 
 // ring buffer

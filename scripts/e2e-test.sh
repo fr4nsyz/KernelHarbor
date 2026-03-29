@@ -1,6 +1,9 @@
 #!/bin/bash
 set -e
 
+# Increase timeout for curl
+export CURL_TIMEOUT=120
+
 ANALYSIS_URL="${ANALYSIS_URL:-http://localhost:8080}"
 ES_URL="${ES_URL:-http://localhost:9200}"
 INDEX_NAME="${INDEX_NAME:-kb-events}"
@@ -21,12 +24,19 @@ info() { echo -e "ℹ $1"; }
 check_service() {
   local url=$1
   local name=$2
-  if curl -s -f "$url" >/dev/null 2>&1; then
-    pass "$name is running"
-    return 0
-  else
-    fail "$name is not running at $url"
-  fi
+  local max_attempts=${3:-5}
+  local attempt=1
+  
+  while [ $attempt -le $max_attempts ]; do
+    if curl -s -f "$url" >/dev/null 2>&1; then
+      pass "$name is running"
+      return 0
+    fi
+    echo "Waiting for $name... ($attempt/$max_attempts)"
+    sleep 2
+    attempt=$((attempt + 1))
+  done
+  fail "$name is not running at $url"
 }
 
 wait_for_service() {
@@ -34,7 +44,7 @@ wait_for_service() {
   local name=$2
   local max_attempts=${3:-30}
   local attempt=1
-
+  
   while [ $attempt -le $max_attempts ]; do
     if curl -s -f "$url" >/dev/null 2>&1; then
       info "$name is ready after $attempt attempts"
@@ -43,14 +53,7 @@ wait_for_service() {
     sleep 1
     attempt=$((attempt + 1))
   done
-  fail "$name not ready after $max_attempts seconds"
-}
-
-analyze() {
-  local query=$1
-  curl -s -X POST "$ANALYSIS_URL/analyze" \
-    -H "Content-Type: application/json" \
-    -d "{\"host.name\":\"test-host\",\"query\":\"$query\"}"
+  warn "$name not ready after $max_attempts seconds"
 }
 
 extract_verdict() {

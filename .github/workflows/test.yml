@@ -54,13 +54,27 @@ jobs:
           stack-version: '8.17.4'
           ssl-enabled: false
 
+      - name: Wait for Elasticsearch
+        run: |
+          echo "Waiting for Elasticsearch..."
+          for i in {1..30}; do
+            if curl -s http://localhost:9200 > /dev/null 2>&1; then
+              echo "Elasticsearch is ready!"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
       - name: Start Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           ollama serve &
           sleep 10
+          echo "Pulling models..."
           ollama pull nomic-embed-text
           ollama pull qwen2.5:7b
+          echo "Models ready!"
 
       - name: Build analysis
         working-directory: ./cmd/analysis
@@ -120,13 +134,27 @@ jobs:
           stack-version: '8.17.4'
           ssl-enabled: false
 
+      - name: Wait for Elasticsearch
+        run: |
+          echo "Waiting for Elasticsearch..."
+          for i in {1..30}; do
+            if curl -s http://localhost:9200 > /dev/null 2>&1; then
+              echo "Elasticsearch is ready!"
+              break
+            fi
+            echo "Waiting... ($i/30)"
+            sleep 2
+          done
+
       - name: Start Ollama
         run: |
           curl -fsSL https://ollama.com/install.sh | sh
           ollama serve &
           sleep 10
+          echo "Pulling models..."
           ollama pull nomic-embed-text
           ollama pull qwen2.5:7b
+          echo "Models ready!"
 
       - name: Run analysis service
         working-directory: ./cmd/analysis

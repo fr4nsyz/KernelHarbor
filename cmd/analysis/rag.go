@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -212,6 +213,8 @@ func truncate(s string, maxLen int) string {
 }
 
 func parseAnalysisResponse(response string) (string, float64, []string, string, error) {
+	jsonStr := extractJSON(response)
+
 	var result struct {
 		Verdict    string   `json:"verdict"`
 		Confidence float64  `json:"confidence"`
@@ -219,10 +222,39 @@ func parseAnalysisResponse(response string) (string, float64, []string, string, 
 		Summary    string   `json:"summary"`
 	}
 
-	decoder := json.NewDecoder(bytes.NewReader([]byte(response)))
+	decoder := json.NewDecoder(bytes.NewReader([]byte(jsonStr)))
 	if err := decoder.Decode(&result); err != nil {
 		return "unknown", 0.0, nil, response, fmt.Errorf("failed to parse analysis: %w", err)
 	}
 
 	return result.Verdict, result.Confidence, result.Evidence, result.Summary, nil
+}
+
+func extractJSON(s string) string {
+	s = strings.TrimSpace(s)
+
+	start := strings.Index(s, "{")
+	if start == -1 {
+		return s
+	}
+
+	braceCount := 0
+	end := -1
+	for i := start; i < len(s); i++ {
+		if s[i] == '{' {
+			braceCount++
+		} else if s[i] == '}' {
+			braceCount--
+			if braceCount == 0 {
+				end = i + 1
+				break
+			}
+		}
+	}
+
+	if end > start {
+		return s[start:end]
+	}
+
+	return s
 }

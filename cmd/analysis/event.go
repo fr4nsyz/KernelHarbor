@@ -85,24 +85,24 @@ func (e *Event) ToBehaviorSummary() string {
 	cmd := e.CommandLine
 	img := e.ImagePath
 
-	if isLOLBin(img) {
-		behaviors = append(behaviors, "lolbin")
+	if isReverseShell(img, cmd) {
+		behaviors = append(behaviors, "reverse_shell")
 	}
 
-	if containsAny(cmd, []string{"curl", "wget", "fetch"}) && containsAny(cmd, []string{"|", "&&", ";", "bash", "sh", "python"}) {
+	if containsAny(cmd, []string{"curl", "wget", "fetch", "curl"}) && containsAny(cmd, []string{"|", "&&", ";", "bash", "sh", "python", "python3"}) {
 		behaviors = append(behaviors, "remote_code_execution")
 	}
 
-	if containsAny(cmd, []string{"powershell", "ps1", "-enc", "-e ", "IEX"}) {
-		behaviors = append(behaviors, "powershell_obfuscation")
-	}
-
-	if containsAny(cmd, []string{"base64", "-enc", "frombase64", "decode"}) {
+	if containsAny(cmd, []string{"base64", "-enc", "-d", "frombase64", "decode"}) {
 		behaviors = append(behaviors, "encoded_command")
 	}
 
-	if containsAny(cmd, []string{"/tmp", "/var/tmp", "C:\\Users\\Temp", "AppData\\Local\\Temp"}) {
+	if containsAny(cmd, []string{"/tmp", "/var/tmp", "/dev/shm"}) {
 		behaviors = append(behaviors, "temp_directory_execution")
+	}
+
+	if containsAny(img, []string{"nc", "netcat", "ncat", "socat"}) {
+		behaviors = append(behaviors, "network_tool")
 	}
 
 	if cmd == "" && e.FilePath != "" {
@@ -115,19 +115,40 @@ func (e *Event) ToBehaviorSummary() string {
 	return joinNonEmpty(behaviors, " ")
 }
 
-func isLOLBin(path string) bool {
-	lolbins := []string{
-		"powershell.exe", "cmd.exe", "certutil.exe", "rundll32.exe",
-		"mshta.exe", "cscript.exe", "wscript.exe", "regsvr32.exe",
-		"msiexec.exe", "wmic.exe", "msbuild.exe", "installutil.exe",
-		"svchost.exe", "explorer.exe", "notepad.exe",
+func isReverseShell(img, cmd string) bool {
+	cmdLower := toLower(cmd)
+	imgLower := toLower(img)
+
+	if containsAny(cmdLower, []string{"/dev/tcp", "/dev/udp", ">&1", "0>&1", ">&0", "2>&1", "<&1"}) {
+		return true
 	}
-	lower := toLower(path)
-	for _, b := range lolbins {
-		if contains(lower, toLower(b)) {
+
+	reverseShellPatterns := []string{
+		"bash -i",
+		"sh -i",
+		"/bin/bash -i",
+		"/bin/sh -i",
+		"nc -e",
+		"ncat -e",
+		"socat exec",
+	}
+
+	for _, pattern := range reverseShellPatterns {
+		if contains(cmdLower, pattern) {
 			return true
 		}
 	}
+
+	if contains(imgLower, "perl") && contains(cmdLower, "socket") {
+		return true
+	}
+
+	if contains(imgLower, "python") || contains(imgLower, "python3") {
+		if containsAny(cmdLower, []string{"socket", "subprocess", "pty.spawn", "popen"}) {
+			return true
+		}
+	}
+
 	return false
 }
 

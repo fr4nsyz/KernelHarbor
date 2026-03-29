@@ -175,6 +175,10 @@ KernelHarbor/
 └── README.md              # This file
 ```
 
+## CI/CD Limitations
+
+GitHub Actions runners do **not** support eBPF. See [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+
 ## License
 
 MIT

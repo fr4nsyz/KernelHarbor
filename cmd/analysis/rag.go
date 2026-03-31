@@ -147,24 +147,47 @@ func (o *OllamaClient) BatchEmbed(ctx context.Context, texts []string) ([][]floa
 
 var ollamaClient *OllamaClient
 
-func buildAnalysisPrompt(events []Event, similarEvents []Event) string {
+func buildAnalysisPrompt(events []Event, similarEvents []Event, processChains map[string][]Event) string {
 	var prompt bytes.Buffer
 
 	prompt.WriteString("You are a security analyst analyzing process execution telemetry. ")
 	prompt.WriteString("Examine the following batch of events for suspicious or malicious behavior.\n\n")
 
 	prompt.WriteString("## Current Event Batch\n")
-	prompt.WriteString("| Timestamp | Type | PID | Image | Command Line | User |\n")
-	prompt.WriteString("|-----------|------|-----|-------|--------------|------|\n")
+	prompt.WriteString("| Timestamp | Type | PID | Parent PID | Image | Command Line | User |\n")
+	prompt.WriteString("|-----------|------|-----|------------|-------|--------------|------|\n")
 	for _, e := range events {
-		prompt.WriteString(fmt.Sprintf("| %s | %s | %d | %s | %s | %s |\n",
+		prompt.WriteString(fmt.Sprintf("| %s | %s | %d | %d | %s | %s | %s |\n",
 			e.Timestamp.Format(time.RFC3339),
 			e.EventType,
 			e.ProcessID,
+			e.ParentPID,
 			truncate(e.ImagePath, 40),
 			truncate(e.CommandLine, 50),
 			e.User,
 		))
+	}
+
+	if len(processChains) > 0 {
+		prompt.WriteString("\n## Process Ancestry Context\n")
+		prompt.WriteString("The following shows the parent processes and their sibling children for events in the current batch.\n")
+		prompt.WriteString("Use this to identify suspicious spawning patterns (e.g. Word spawning PowerShell, bash spawning nc).\n\n")
+		for parentGUID, chainEvents := range processChains {
+			prompt.WriteString(fmt.Sprintf("**Parent GUID: %s**\n", parentGUID))
+			prompt.WriteString("| Timestamp | Type | PID | Image | Command Line | User |\n")
+			prompt.WriteString("|-----------|------|-----|-------|--------------|------|\n")
+			for _, e := range chainEvents {
+				prompt.WriteString(fmt.Sprintf("| %s | %s | %d | %s | %s | %s |\n",
+					e.Timestamp.Format(time.RFC3339),
+					e.EventType,
+					e.ProcessID,
+					truncate(e.ImagePath, 40),
+					truncate(e.CommandLine, 50),
+					e.User,
+				))
+			}
+			prompt.WriteString("\n")
+		}
 	}
 
 	if len(similarEvents) > 0 {
@@ -183,12 +206,13 @@ func buildAnalysisPrompt(events []Event, similarEvents []Event) string {
 
 	prompt.WriteString("\n## Analysis Guidelines\n")
 	prompt.WriteString("Look for:\n")
-	prompt.WriteString("- Unusual parent processes (e.g., office app spawning cmd.exe)\n")
+	prompt.WriteString("- Unusual parent processes (e.g., office app spawning cmd.exe, bash spawning nc/curl piped to sh)\n")
 	prompt.WriteString("- LOLBins (Living Off the Land binaries) in suspicious contexts\n")
 	prompt.WriteString("- Unusual command line arguments (encoded commands, suspicious flags)\n")
 	prompt.WriteString("- Process execution from temp directories or unusual locations\n")
 	prompt.WriteString("- Network connections from spawned processes\n")
-	prompt.WriteString("- Privilege escalation patterns\n\n")
+	prompt.WriteString("- Privilege escalation patterns\n")
+	prompt.WriteString("- Process chains that indicate lateral movement or multi-stage payloads\n\n")
 
 	prompt.WriteString("## Output Format\n")
 	prompt.WriteString("Provide your analysis in JSON format:\n")

@@ -218,8 +218,28 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 		}
 	}
 
-	// 3. Build analysis prompt
-	prompt := buildAnalysisPrompt(batch.Events, similarEvents)
+	// 3. Fetch process ancestry chains for events that have a parent GUID
+	processChains := map[string][]Event{}
+	if esClientInstance != nil {
+		seenGUIDs := map[string]bool{}
+		for _, e := range batch.Events {
+			if e.ParentGUID == "" || seenGUIDs[e.ParentGUID] {
+				continue
+			}
+			seenGUIDs[e.ParentGUID] = true
+			chain, err := esClientInstance.SearchProcessTree(ctx, batch.HostName, e.ParentGUID, 1)
+			if err != nil {
+				log.Printf("Failed to fetch process tree for parent %s: %v", e.ParentGUID, err)
+				continue
+			}
+			if len(chain) > 0 {
+				processChains[e.ParentGUID] = chain
+			}
+		}
+	}
+
+	// 4. Build analysis prompt
+	prompt := buildAnalysisPrompt(batch.Events, similarEvents, processChains)
 
 	// 4. Run AI analysis
 	if ollamaClient != nil {

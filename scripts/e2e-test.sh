@@ -64,6 +64,13 @@ extract_confidence() {
   echo "$1" | grep -o '"confidence"[[:space:]]*:[[:space:]]*[0-9.]*' | grep -o '[0-9.]*'
 }
 
+analyze() {
+  local query=$1
+  curl -s -X POST "$ANALYSIS_URL/analyze" \
+    -H "Content-Type: application/json" \
+    -d "{\"host.name\":\"test-host\",\"query\":\"$query\"}"
+}
+
 check_es_index() {
   curl -s -f "$ES_URL/$INDEX_NAME" >/dev/null 2>&1
 }

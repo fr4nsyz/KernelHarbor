@@ -1,0 +1,138 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        goos: [linux, darwin]
+        goarch: [amd64, arm64]
+        include:
+          - goos: linux
+            goarch: amd64
+            ebpfs: true
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Install eBPF dependencies (Linux only)
+        if: matrix.ebpfs == true
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang llvm libbpf-dev linux-headers-$(uname -r)
+
+      - name: Build analysis server
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        working-directory: ./cmd/analysis
+        run: |
+          CGO_ENABLED=0 go build -ldflags="-s -w" -o analysis-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Build execve-tracer (Linux only)
+        if: matrix.ebpfs == true
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        working-directory: ./cmd/execve-tracer
+        run: |
+          CGO_ENABLED=1 go build -ldflags="-s -w" -o execve-tracer-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Build open-tracer (Linux only)
+        if: matrix.ebpfs == true
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        working-directory: ./cmd/open-tracer
+        run: |
+          CGO_ENABLED=1 go build -ldflags="-s -w" -o open-tracer-${{ matrix.goos }}-${{ matrix.goarch }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.goos }}-${{ matrix.goarch }}
+          path: |
+            cmd/analysis/analysis-${{ matrix.goos }}-${{ matrix.goarch }}
+            ${{ matrix.ebpfs == true && 'cmd/execve-tracer/execve-tracer-${{ matrix.goos }}-${{ matrix.goarch }}' || '' }}
+            ${{ matrix.ebpfs == true && 'cmd/open-tracer/open-tracer-${{ matrix.goos }}-${{ matrix.goarch }}' || '' }}
+          retention-days: 5
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Prepare release
+        id: prepare_release
+        run: |
+          VERSION=${GITHUB_REF#refs/tags/}
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          
+          # Create release notes
+          cat > release-notes.md << 'EOF'
+          # KernelHarbor Release $VERSION
+          
+          ## Binaries
+          
+          | Component | Linux | Darwin |
+          |----------|-------|--------|
+          | analysis | analysis-linux-amd64 | analysis-darwin-arm64 |
+          | execve-tracer | execve-tracer-linux-amd64 | - |
+          | open-tracer | open-tracer-linux-amd64 | - |
+          
+          ## Usage
+          
+          ### Analysis Server
+          ```bash
+          ./analysis-linux-amd64
+          ```
+          
+          ### eBPF Tracers (Linux only)
+          ```bash
+          # Requires root
+          sudo ./execve-tracer-linux-amd64
+          ```
+          
+          ## Requirements
+          - Elasticsearch 8.x
+          - Ollama (for AI analysis)
+          - Linux 5.x+ (for eBPF)
+          EOF
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          draft: false
+          prerelease: ${{ contains(github.ref, 'alpha') || contains(github.ref, 'beta') }}
+          generate_release_notes: true
+          files: |
+            artifacts/*
+          body_path: release-notes.md
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

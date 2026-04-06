@@ -19,6 +19,7 @@ cd cmd/analysis && go build -o analysis .
 # Build eBPF tracers (requires Linux)
 cd cmd/execve-tracer && go build -o execve-tracer .
 cd cmd/open-tracer && go build -o open-tracer .
+cd cmd/openat-tracer && go build -o openat-tracer .
 ```
 
 ### Testing

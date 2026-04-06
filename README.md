@@ -21,6 +21,7 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 |-----------|-------------|
 | `execve-tracer/` | eBPF-based process execution monitoring |
 | `open-tracer/` | eBPF-based file open monitoring |
+| `openat-tracer/` | eBPF-based file open monitoring with directory path resolution |
 | `analysis/` | AI-powered event analysis pipeline |
 
 ### eBPF Programs (`bpf/`)
@@ -29,6 +30,7 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 |------|-------------|
 | `execve-tracer.bpf.c` | Hooks `sys_enter_execve` |
 | `open-tracer.bpf.c` | Hooks `sys_enter_openat` |
+| `openat-tracer.bpf.c` | Hooks `sys_enter_openat` with directory path resolution via `bpf_d_path` |
 
 ## Quick Start
 
@@ -56,6 +58,7 @@ ollama pull qwen2.5:7b
 # Build all components
 cd cmd/execve-tracer && go build -o execve-tracer .
 cd cmd/open-tracer && go build -o open-tracer .
+cd cmd/openat-tracer && go build -o openat-tracer .
 cd cmd/analysis && go build -o analysis .
 ```
 
@@ -166,13 +169,15 @@ curl -X POST http://localhost:8080/analyze \
 KernelHarbor/
 ├── bpf/                    # eBPF programs (C)
 │   ├── execve-tracer.bpf.c
-│   └── open-tracer.bpf.c
+│   ├── open-tracer.bpf.c
+│   └── openat-tracer.bpf.c
 ├── cmd/
 │   ├── execve-tracer/      # Process execution tracer
-│   ├── open-tracer/       # File access tracer
-│   └── analysis/          # AI analysis pipeline
+│   ├── open-tracer/        # File access tracer
+│   ├── openat-tracer/      # File access tracer with directory path resolution
+│   └── analysis/           # AI analysis pipeline
 ├── plan.md                 # Original design document
-└── README.md              # This file
+└── README.md               # This file
 ```
 
 ## CI/CD Limitations

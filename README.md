@@ -55,19 +55,14 @@ ollama pull qwen2.5:7b
 ### Build
 
 ```bash
-# Generate vmlinux.h for your kernel (one-time, requires bpftool)
-bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+# Build everything (generates vmlinux.h and eBPF Go bindings automatically)
+make
 
-# Generate eBPF Go bindings
-go generate ./cmd/execve-tracer/
-go generate ./cmd/open-tracer/
-go generate ./cmd/openat-tracer/
-
-# Build all components
-go build -o cmd/execve-tracer/execve-tracer ./cmd/execve-tracer
-go build -o cmd/open-tracer/open-tracer ./cmd/open-tracer
-go build -o cmd/openat-tracer/openat-tracer ./cmd/openat-tracer
-go build -o cmd/analysis/analysis ./cmd/analysis
+# Or build individual components
+make execve-tracer
+make open-tracer
+make openat-tracer
+make analysis
 ```
 
 > **Note:** `vmlinux.h` is generated from your running kernel's BTF data and is gitignored. You only need to regenerate it when switching to a kernel with different data structures. Since the eBPF programs use CO-RE (Compile Once, Run Everywhere), the compiled programs are portable across kernel versions.

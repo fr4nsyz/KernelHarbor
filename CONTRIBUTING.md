@@ -13,26 +13,24 @@
 ### Building
 
 ```bash
-# Generate vmlinux.h (one-time, requires bpftool)
-bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+# Build everything (generates vmlinux.h and eBPF Go bindings automatically)
+make
 
-# Generate eBPF Go bindings (re-run after changing .bpf.c files)
-go generate ./cmd/execve-tracer/
-go generate ./cmd/open-tracer/
-go generate ./cmd/openat-tracer/
+# Or build individual components
+make execve-tracer
+make open-tracer
+make openat-tracer
+make analysis
 
-# Build all components
-go build -o cmd/analysis/analysis ./cmd/analysis
-go build -o cmd/execve-tracer/execve-tracer ./cmd/execve-tracer
-go build -o cmd/open-tracer/open-tracer ./cmd/open-tracer
-go build -o cmd/openat-tracer/openat-tracer ./cmd/openat-tracer
+# Clean all generated files and binaries
+make clean
 ```
 
 ### Testing
 
 ```bash
-# Unit tests (all platforms)
-cd cmd/analysis && go test -v ./...
+# Unit tests
+make test
 
 # E2E tests (requires ES + Ollama)
 ./scripts/e2e-test.sh

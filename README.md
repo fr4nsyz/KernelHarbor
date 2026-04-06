@@ -38,7 +38,7 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 
 ```bash
 # Install eBPF toolchain
-sudo apt install clang llvm linux-headers-$(uname -r)
+sudo apt install clang llvm libbpf-dev linux-tools-$(uname -r)
 
 # Start Elasticsearch
 docker run -d --name elasticsearch -p 9200:9200 \
@@ -55,12 +55,22 @@ ollama pull qwen2.5:7b
 ### Build
 
 ```bash
+# Generate vmlinux.h for your kernel (one-time, requires bpftool)
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
+
+# Generate eBPF Go bindings
+go generate ./cmd/execve-tracer/
+go generate ./cmd/open-tracer/
+go generate ./cmd/openat-tracer/
+
 # Build all components
-cd cmd/execve-tracer && go build -o execve-tracer .
-cd cmd/open-tracer && go build -o open-tracer .
-cd cmd/openat-tracer && go build -o openat-tracer .
-cd cmd/analysis && go build -o analysis .
+go build -o cmd/execve-tracer/execve-tracer ./cmd/execve-tracer
+go build -o cmd/open-tracer/open-tracer ./cmd/open-tracer
+go build -o cmd/openat-tracer/openat-tracer ./cmd/openat-tracer
+go build -o cmd/analysis/analysis ./cmd/analysis
 ```
+
+> **Note:** `vmlinux.h` is generated from your running kernel's BTF data and is gitignored. You only need to regenerate it when switching to a kernel with different data structures. Since the eBPF programs use CO-RE (Compile Once, Run Everywhere), the compiled programs are portable across kernel versions.
 
 ### Run
 

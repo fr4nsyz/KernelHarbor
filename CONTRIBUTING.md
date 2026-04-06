@@ -6,20 +6,26 @@
 
 - Go 1.25+
 - clang, llvm, libbpf-dev
-- Linux headers (for eBPF)
+- bpftool (usually in `linux-tools-$(uname -r)`)
 - Elasticsearch 8.x (for integration tests)
 - Ollama (for AI analysis tests)
 
 ### Building
 
 ```bash
-# Build analysis server
-cd cmd/analysis && go build -o analysis .
+# Generate vmlinux.h (one-time, requires bpftool)
+bpftool btf dump file /sys/kernel/btf/vmlinux format c > bpf/vmlinux.h
 
-# Build eBPF tracers (requires Linux)
-cd cmd/execve-tracer && go build -o execve-tracer .
-cd cmd/open-tracer && go build -o open-tracer .
-cd cmd/openat-tracer && go build -o openat-tracer .
+# Generate eBPF Go bindings (re-run after changing .bpf.c files)
+go generate ./cmd/execve-tracer/
+go generate ./cmd/open-tracer/
+go generate ./cmd/openat-tracer/
+
+# Build all components
+go build -o cmd/analysis/analysis ./cmd/analysis
+go build -o cmd/execve-tracer/execve-tracer ./cmd/execve-tracer
+go build -o cmd/open-tracer/open-tracer ./cmd/open-tracer
+go build -o cmd/openat-tracer/openat-tracer ./cmd/openat-tracer
 ```
 
 ### Testing

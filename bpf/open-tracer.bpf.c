@@ -1,5 +1,5 @@
 // go:build ignore
-#include "linux-headers/6.17.0-19/vmlinux.h"
+#include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include "open.h"

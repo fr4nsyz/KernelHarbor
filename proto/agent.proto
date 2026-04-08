@@ -1,0 +1,53 @@
+syntax = "proto3";
+
+package kernelharbor;
+
+option go_package = "github.com/fr4nsyz/vault/L_CACHES/KernelHarbor/proto/kernelharborpb";
+
+message Event {
+  string timestamp = 1;
+  string host_name = 2;
+  string event_type = 3;
+  string event_id = 4;
+  uint32 process_id = 5;
+  string comm = 6;
+
+  // execve fields
+  string image_path = 7;
+  string command_line = 8;
+
+  // open fields
+  string file_path = 9;
+  int32 flags = 10;
+  uint32 mode = 11;
+
+  // connect fields
+  string remote_addr = 12;
+  uint32 remote_port = 13;
+  string local_addr = 14;
+  uint32 local_port = 15;
+}
+
+message IngestRequest {
+  repeated Event events = 1;
+}
+
+message IngestResponse {
+  uint32 accepted = 1;
+}
+
+message AnalysisRequest {
+  string host_name = 1;
+  string query = 2;
+}
+
+message AnalysisResponse {
+  string verdict = 1;
+  float confidence = 2;
+  string summary = 3;
+}
+
+service AgentService {
+  rpc Ingest(IngestRequest) returns (IngestResponse);
+  rpc Analyze(AnalysisRequest) returns (AnalysisResponse);
+}

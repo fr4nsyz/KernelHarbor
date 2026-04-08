@@ -13,14 +13,20 @@ import (
 	"github.com/cilium/ebpf/rlimit"
 )
 
+const AT_FDCWD = -100
+
 type OpenatEvent struct {
-	Pid           uint32
-	Comm          [16]byte
-	Filepath      [256]byte
-	FilepathAvail bool
-	_             [3]byte // padding to match C struct alignment
-	Flags         uint32
-	IMode         uint32
+	Pid          uint32
+	Comm         [16]byte
+	Dirfd        int32
+	Filename     [256]byte
+	Flags        uint32
+	ModeAvail    bool
+	_            [3]byte // MATCH PADDING INSERTED IN EQUIVALENT C STRUCT
+	Mode         uint32
+	DirPath      [256]byte
+	DirPathAvail bool
+	_2           [3]byte // MATCH PADDING INSERTED IN EQUIVALENT C STRUCT
 }
 
 func main() {
@@ -36,10 +42,13 @@ func main() {
 	}
 	defer objs.Close()
 
-	// attach fentry to security_file_open
-	tp, err := link.AttachTracing(link.TracingOptions{
-		Program: objs.HandleFileOpen,
-	})
+	// attach to sys_enter_openat
+	tp, err := link.Tracepoint(
+		"syscalls",
+		"sys_enter_openat",
+		objs.HandleOpenat,
+		nil,
+	)
 	if err != nil {
 		log.Fatal(err)
 	}
@@ -78,17 +87,28 @@ func main() {
 		}
 
 		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+		filename := string(bytes.TrimRight(e.Filename[:], "\x00"))
 
 		fmt.Printf("\nPID: %d | COMM: %s\n", e.Pid, comm)
 
-		if e.FilepathAvail {
-			filepath := string(bytes.TrimRight(e.Filepath[:], "\x00"))
-			fmt.Printf("PATH: %s\n", filepath)
+		if e.Dirfd == AT_FDCWD {
+			fmt.Printf("DIRFD: AT_FDCWD")
 		} else {
-			fmt.Printf("PATH: (unavailable)\n")
+			fmt.Printf("DIRFD: %d", e.Dirfd)
+		}
+		if e.DirPathAvail {
+			dirPath := string(bytes.TrimRight(e.DirPath[:], "\x00"))
+			fmt.Printf(" (%s)\n", dirPath)
+		} else {
+			fmt.Printf("\n")
 		}
 
+		fmt.Printf("OPENAT: %s\n", filename)
+
 		fmt.Printf("FLAGS: %d\n", e.Flags)
-		fmt.Printf("IMODE: %04o\n", e.IMode)
+
+		if e.ModeAvail {
+			fmt.Printf("MODE: %d\n", e.Mode)
+		}
 	}
 }

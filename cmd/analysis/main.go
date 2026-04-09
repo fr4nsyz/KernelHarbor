@@ -170,6 +170,29 @@ func main() {
 				events[i].EventID = generateEventID()
 			}
 
+			query := events[i].CommandLine
+			if query == "" {
+				query = events[i].FilePath
+			}
+			if query == "" {
+				query = events[i].RemoteAddr
+			}
+
+			verdict := "benign"
+			confidence := float32(0.0)
+
+			if autoAnalyzeByDefault && query != "" {
+				if hasSuspiciousPattern(query) {
+					verdict = "suspicious"
+					confidence = 0.7
+				} else {
+					confidence = 0.3
+				}
+			}
+
+			log.Printf("Received event: %s [%s] PID=%d CMD=%s | VERDICT=%s CONFIDENCE=%.2f",
+				events[i].EventType, events[i].EventID, events[i].ProcessID, events[i].CommandLine, verdict, confidence)
+
 			processor.Submit(events[i])
 		}
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -102,18 +103,45 @@ func (h *grpcHandler) Analyze(ctx context.Context, req *pb.AnalysisRequest) (*pb
 }
 
 func hasSuspiciousPattern(cmd string) bool {
-	suspicious := []string{
-		"curl", "wget", "bash -i", "sh -i",
-		"nc ", "netcat", "socat",
-		"base64 -d", "powershell",
-		"python.*socket", "python.*subprocess",
-		"exec", "/bin/sh", "/bin/bash",
+	if cmd == "" {
+		return false
 	}
-	for _, p := range suspicious {
-		if len(cmd) >= len(p) && cmd[:len(p)] == p {
+
+	suspiciousPatterns := []string{
+		`curl\s+[^\s]+\s*\|`,    // curl piped to another command
+		`curl\s+[^\s]+\s*>\s*/`, // curl redirect to file
+		`wget\s+-[OQAq]`,        // wget with output flags
+		`wget\s+[^\s]+\s*\|`,    // wget piped
+		`wget\s+[^\s]+\s*>\s*/`, // wget redirect
+		`bash\s+-i`,             // interactive bash
+		`sh\s+-i`,               // interactive sh
+		`nc\s+-[lv]`,            // netcat listen/verbose
+		`nc\s+[0-9]`,            // netcat with target
+		`netcat\s+`,             // netcat
+		`socat\s+`,              // socat
+		`base64\s+-d`,           // base64 decode
+		`powershell`,            // powershell
+		`python.*socket`,        // python socket
+		`python.*subprocess`,    // python subprocess
+		`python.*-c\s+`,         // python one-liner
+		`/bin/(ba)?sh\s+-c`,     // shell -c
+	}
+
+	for _, pattern := range suspiciousPatterns {
+		matched, _ := regexp.MatchString(pattern, cmd)
+		if matched {
 			return true
 		}
 	}
+
+	dangerousExtensions := []string{`\.sh$`, `\.bash$`, `\.ps1$`}
+	for _, ext := range dangerousExtensions {
+		matched, _ := regexp.MatchString(ext, cmd)
+		if matched {
+			return true
+		}
+	}
+
 	return false
 }
 

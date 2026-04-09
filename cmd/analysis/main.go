@@ -2,10 +2,12 @@ package main
 
 import (
 	"context"
+	"flag"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +18,7 @@ type Config struct {
 	Server struct {
 		Addr string `yaml:"addr" json:"addr"`
 	} `yaml:"server" json:"server"`
+	Protocol      string `yaml:"protocol" json:"protocol"`
 	Elasticsearch struct {
 		Addresses []string `yaml:"addresses" json:"addresses"`
 		Username  string   `yaml:"username" json:"username"`
@@ -40,6 +43,7 @@ func getDefaultConfig() Config {
 		Server: struct {
 			Addr string `yaml:"addr" json:"addr"`
 		}{Addr: ":8080"},
+		Protocol: "both",
 		Elasticsearch: struct {
 			Addresses []string `yaml:"addresses" json:"addresses"`
 			Username  string   `yaml:"username" json:"username"`
@@ -73,6 +77,10 @@ func getDefaultConfig() Config {
 }
 
 func main() {
+	noAutoAnalyze := flag.Bool("no-auto-analyze", false, "Disable automatic analysis on ingest")
+	flag.Parse()
+	autoAnalyzeByDefault = !*noAutoAnalyze
+
 	cfg := getDefaultConfig()
 
 	if addr := os.Getenv("ES_ADDRESSES"); addr != "" {
@@ -90,6 +98,9 @@ func main() {
 	}
 	if ollamaModel := os.Getenv("OLLAMA_MODEL"); ollamaModel != "" {
 		cfg.Ollama.Model = ollamaModel
+	}
+	if protocol := os.Getenv("PROTOCOL"); protocol != "" {
+		cfg.Protocol = protocol
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -118,7 +129,7 @@ func main() {
 	})
 	log.Printf("Ollama client configured: %s %s", cfg.Ollama.Address, cfg.Ollama.Model)
 
-	processor := NewBatchProcessor(BatchProcessorConfig{
+	processor = NewBatchProcessor(BatchProcessorConfig{
 		Workers:      cfg.Processor.Workers,
 		BatchSize:    cfg.Processor.BatchSize,
 		BatchTimeout: cfg.Processor.BatchTimeout,
@@ -158,6 +169,29 @@ func main() {
 			if events[i].EventID == "" {
 				events[i].EventID = generateEventID()
 			}
+
+			query := events[i].CommandLine
+			if query == "" {
+				query = events[i].FilePath
+			}
+			if query == "" {
+				query = events[i].RemoteAddr
+			}
+
+			verdict := "benign"
+			confidence := float32(0.0)
+
+			if autoAnalyzeByDefault && query != "" {
+				if hasSuspiciousPattern(query) {
+					verdict = "suspicious"
+					confidence = 0.7
+				} else {
+					confidence = 0.3
+				}
+			}
+
+			log.Printf("Received event: %s [%s] PID=%d CMD=%s | VERDICT=%s CONFIDENCE=%.2f",
+				events[i].EventType, events[i].EventID, events[i].ProcessID, events[i].CommandLine, verdict, confidence)
 
 			processor.Submit(events[i])
 		}
@@ -249,12 +283,25 @@ func main() {
 		Handler: router,
 	}
 
-	go func() {
-		log.Printf("Starting HTTP server on %s", cfg.Server.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Failed to start server: %v", err)
-		}
-	}()
+	if cfg.Protocol == "http" || cfg.Protocol == "both" {
+		go func() {
+			log.Printf("Starting HTTP server on %s", cfg.Server.Addr)
+			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				log.Fatalf("Failed to start server: %v", err)
+			}
+		}()
+	}
+
+	grpcAddr := ":9090"
+	if g := os.Getenv("GRPC_ADDRESS"); g != "" {
+		grpcAddr = g
+	}
+
+	var grpcWg sync.WaitGroup
+	if cfg.Protocol == "grpc" || cfg.Protocol == "both" {
+		grpcWg.Add(1)
+		go startGrpcServer(grpcAddr, &grpcWg)
+	}
 
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
@@ -265,8 +312,18 @@ func main() {
 
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
-	if err := srv.Shutdown(shutdownCtx); err != nil {
-		log.Printf("Server shutdown error: %v", err)
+
+	if cfg.Protocol == "http" || cfg.Protocol == "both" {
+		if err := srv.Shutdown(shutdownCtx); err != nil {
+			log.Printf("HTTP server shutdown error: %v", err)
+		}
+	}
+
+	if cfg.Protocol == "grpc" || cfg.Protocol == "both" {
+		if grpcServer != nil {
+			grpcServer.GracefulStop()
+		}
+		grpcWg.Wait()
 	}
 
 	log.Println("Server stopped")

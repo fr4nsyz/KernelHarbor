@@ -22,6 +22,9 @@ import (
 	pb "agent/proto"
 )
 
+const maxReconnectDelay = 30 * time.Second
+const initialReconnectDelay = 1 * time.Second
+
 const MAX_ARGS = 20
 const ARG_LEN = 128
 
@@ -159,14 +162,7 @@ func main() {
 
 	if grpcAddr != "" {
 		sendToAPI = true
-		fmt.Printf("Connecting to gRPC server: %s\n", grpcAddr)
-
-		conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
-		if err != nil {
-			log.Fatalf("failed to connect to gRPC server: %v", err)
-		}
-		grpcConn = conn
-		grpcClient = pb.NewAgentServiceClient(conn)
+		go grpcReconnectLoop()
 	} else {
 		fmt.Println("GRPC_ADDRESS not set, events will only be printed")
 	}
@@ -451,4 +447,45 @@ func sendEventToAPI(event UnifiedEvent) {
 			fmt.Printf("Server rejected event\n")
 		}
 	}()
+}
+
+func grpcReconnectLoop() {
+	delay := initialReconnectDelay
+	for {
+		conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		if err != nil {
+			log.Printf("gRPC connection failed: %v", err)
+			time.Sleep(delay)
+			delay = min(delay*2, maxReconnectDelay)
+			continue
+		}
+
+		client := pb.NewAgentServiceClient(conn)
+
+		grpcMu.Lock()
+		grpcConn = conn
+		grpcClient = client
+		grpcClosed.Store(false)
+		grpcMu.Unlock()
+
+		fmt.Printf("Connected to gRPC server: %s\n", grpcAddr)
+		delay = initialReconnectDelay
+
+		testCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err = client.Ingest(testCtx, &pb.IngestRequest{})
+		cancel()
+
+		if err != nil {
+			grpcMu.Lock()
+			grpcClosed.Store(true)
+			conn.Close()
+			grpcMu.Unlock()
+			log.Printf("gRPC connection lost: %v, reconnecting...", err)
+			time.Sleep(delay)
+			delay = min(delay*2, maxReconnectDelay)
+			continue
+		}
+
+		break
+	}
 }

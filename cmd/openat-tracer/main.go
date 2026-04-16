@@ -3,11 +3,13 @@ package main
 import (
 	"bytes"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"log"
 	"os"
 	"os/signal"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -22,11 +24,11 @@ type OpenatEvent struct {
 	Filename     [256]byte
 	Flags        uint32
 	ModeAvail    bool
-	_            [3]byte // MATCH PADDING INSERTED IN EQUIVALENT C STRUCT
+	Pad0         [3]byte // MATCH PADDING INSERTED IN EQUIVALENT C STRUCT
 	Mode         uint32
 	DirPath      [256]byte
 	DirPathAvail bool
-	_2           [3]byte // MATCH PADDING INSERTED IN EQUIVALENT C STRUCT
+	Pad1         [3]byte // MATCH PADDING INSERTED IN EQUIVALENT C STRUCT
 }
 
 func main() {
@@ -37,8 +39,18 @@ func main() {
 
 	// load compiled eBPF objects
 	objs := openatTracerObjects{}
-	if err := loadOpenatTracerObjects(&objs, nil); err != nil {
-		log.Fatal(err)
+	if err := loadOpenatTracerObjects(&objs, &ebpf.CollectionOptions{
+		Programs: ebpf.ProgramOptions{
+			LogSizeStart: 1 << 26, // 64MB log buffer to capture full verifier output
+		},
+	}); err != nil {
+		var ve *ebpf.VerifierError
+		if errors.As(err, &ve) {
+			fmt.Printf("Verifier error: %+v\n", ve)
+		} else {
+			log.Fatal(err)
+		}
+		os.Exit(1)
 	}
 	defer objs.Close()
 

@@ -27,10 +27,13 @@ type Event struct {
 
 	FilePath  string `json:"file.path,omitempty"`
 	FileFlags string `json:"file.flags,omitempty"`
+	FileMode  uint32 `json:"file.mode,omitempty"`
 
 	SocketInfo string `json:"socket.info,omitempty"`
 	RemoteAddr string `json:"remote.address,omitempty"`
 	RemotePort uint16 `json:"remote.port,omitempty"`
+	LocalAddr  string `json:"local.address,omitempty"`
+	LocalPort  uint16 `json:"local.port,omitempty"`
 
 	Metadata map[string]any `json:"metadata,omitempty"`
 

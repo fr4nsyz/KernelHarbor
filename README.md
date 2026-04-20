@@ -54,14 +54,22 @@ ollama pull qwen2.5:7b
 ### Build
 
 ```bash
-# Build consolidated agent (execve + open + connect)
-cd cmd/agent && go build -o agent .
+# Build everything (tracers + agent + analysis)
+# Generates vmlinux.h and runs bpf2go automatically.
+make
 
-# Build analysis service
-cd cmd/analysis && go build -o analysis .
+# Or build individual components
+make agent
+make analysis
+make execve-tracer
+make open-tracer
+make openat-tracer
+
+# Remove binaries, generated bpf2go output, and vmlinux.h
+make clean
 ```
 
-> **Note:** `vmlinux.h` is generated from your running kernel's BTF data and is gitignored. You only need to regenerate it when switching to a kernel with different data structures. Since the eBPF programs use CO-RE (Compile Once, Run Everywhere), the compiled programs are portable across kernel versions.
+> **Note:** `vmlinux.h` is generated from your running kernel's BTF data (via `bpftool`) and is gitignored. You only need to regenerate it when switching to a kernel with different data structures. Since the eBPF programs use CO-RE (Compile Once, Run Everywhere), the compiled programs are portable across kernel versions.
 
 ### Run
 

@@ -12,19 +12,34 @@
 
 ### Building
 
+The top-level `Makefile` is the source of truth for builds. It generates
+`bpf/vmlinux.h` from the running kernel's BTF, runs `go generate` (bpf2go) for
+each component that uses eBPF, and then compiles the Go binaries.
+
 ```bash
-# Build everything (generates vmlinux.h and eBPF Go bindings automatically)
-make
+# Build everything (tracers + agent + analysis)
+make            # alias for `make build`
 
 # Or build individual components
-make execve-tracer
-make open-tracer
-make openat-tracer
-make analysis
+make agent          # consolidated tracer (execve + open + openat + connect)
+make analysis       # AI analysis service (gRPC + HTTP)
+make execve-tracer  # standalone execve tracer
+make open-tracer    # standalone open tracer
+make openat-tracer  # standalone openat tracer
 
-# Clean all generated files and binaries
+# Clean binaries, bpf2go output, and vmlinux.h
 make clean
 ```
+
+Notes:
+
+- `bpf/vmlinux.h` is regenerated via `bpftool btf dump` whenever it is missing.
+  It is gitignored.
+- Each tracer's `cmd/<tracer>/gen.go` holds the `//go:generate` directive that
+  drives bpf2go; the agent's directives live in `cmd/agent/gen.go` and must be
+  kept in sync with `AGENT_BPF` / `AGENT_GENGO` in the `Makefile`.
+- The eBPF C sources live under `bpf/` and are shared between the standalone
+  tracers and the consolidated `agent`.
 
 ### Testing
 

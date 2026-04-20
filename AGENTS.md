@@ -6,7 +6,7 @@
 # Build analysis service
 cd cmd/analysis && go build -o analysis .
 
-# Build consolidated agent (execve + open + connect)
+# Build consolidated agent (execve + open + openat + connect)
 cd cmd/agent && go build -o agent .
 ```
 
@@ -53,7 +53,7 @@ gRPC on port 9090 (configurable via `GRPC_ADDRESS`)
 ## Project Structure
 
 ```
-cmd/agent/            # Consolidated tracer (execve + open + connect)
+cmd/agent/            # Consolidated tracer (execve + open + openat + connect)
 cmd/analysis/         # AI analysis pipeline (Go + gRPC)
 proto/                # Protocol Buffer definitions
 bpf/                  # eBPF C programs

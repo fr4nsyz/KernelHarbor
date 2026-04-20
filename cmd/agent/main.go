@@ -28,6 +28,8 @@ const initialReconnectDelay = 1 * time.Second
 const MAX_ARGS = 20
 const ARG_LEN = 128
 
+const AT_FDCWD = -100
+
 var (
 	grpcAddr   = os.Getenv("GRPC_ADDRESS")
 	hostName   = getHostName()
@@ -85,6 +87,20 @@ type OpenEvent struct {
 	Mode      uint32
 }
 
+type OpenatEvent struct {
+	Pid          uint32
+	Comm         [16]byte
+	Dirfd        int32
+	Filename     [256]byte
+	Flags        uint32
+	ModeAvail    bool
+	Pad0         [3]byte
+	Mode         uint32
+	DirPath      [256]byte
+	DirPathAvail bool
+	Pad1         [3]byte
+}
+
 type ConnectEvent struct {
 	Pid        uint32
 	Comm       [16]byte
@@ -106,6 +122,7 @@ func main() {
 	var execveObjs execveTracerObjects
 	var openObjs openTracerObjects
 	var connectObjs connectTracerObjects
+	var openatObjs openatTracerObjects
 
 	if err := loadExecveTracerObjects(&execveObjs, nil); err != nil {
 		log.Fatalf("failed to load execve tracer: %v", err)
@@ -121,6 +138,11 @@ func main() {
 		log.Fatalf("failed to load connect tracer: %v", err)
 	}
 	defer connectObjs.Close()
+
+	if err := loadOpenatTracerObjects(&openatObjs, nil); err != nil {
+		log.Fatalf("failed to load openat tracer: %v", err)
+	}
+	defer openatObjs.Close()
 
 	execveTp, err := link.Tracepoint("syscalls", "sys_enter_execve", execveObjs.HandleExec, nil)
 	if err != nil {
@@ -140,6 +162,12 @@ func main() {
 	}
 	defer connectTp.Close()
 
+	openatTp, err := link.Tracepoint("syscalls", "sys_enter_openat", openatObjs.HandleOpenat, nil)
+	if err != nil {
+		log.Fatalf("failed to attach openat tracepoint: %v", err)
+	}
+	defer openatTp.Close()
+
 	execveRd, err := ringbuf.NewReader(execveObjs.Events)
 	if err != nil {
 		log.Fatalf("failed to open execve ringbuf: %v", err)
@@ -158,7 +186,13 @@ func main() {
 	}
 	defer connectRd.Close()
 
-	fmt.Println("Agent listening for execve, open, and connect events...")
+	openatRd, err := ringbuf.NewReader(openatObjs.Events)
+	if err != nil {
+		log.Fatalf("failed to open openat ringbuf: %v", err)
+	}
+	defer openatRd.Close()
+
+	fmt.Println("Agent listening for execve, open, openat, and connect events...")
 
 	if grpcAddr != "" {
 		sendToAPI = true
@@ -182,11 +216,13 @@ func main() {
 		execveRd.Close()
 		openRd.Close()
 		connectRd.Close()
+		openatRd.Close()
 	}()
 
 	go readExecveRingbuf(execveRd)
 	go readOpenRingbuf(openRd)
 	go readConnectRingbuf(connectRd)
+	go readOpenatRingbuf(openatRd)
 
 	<-stop
 }
@@ -345,6 +381,48 @@ func readConnectRingbuf(rd *ringbuf.Reader) {
 	}
 }
 
+func readOpenatRingbuf(rd *ringbuf.Reader) {
+	for {
+		record, err := rd.Read()
+		if err != nil {
+			return
+		}
+
+		var e OpenatEvent
+		if err := binary.Read(bytes.NewBuffer(record.RawSample), binary.LittleEndian, &e); err != nil {
+			log.Println("openat parse error:", err)
+			continue
+		}
+
+		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+		filename := string(bytes.TrimRight(e.Filename[:], "\x00"))
+		dirPath := ""
+		if e.DirPathAvail {
+			dirPath = string(bytes.TrimRight(e.DirPath[:], "\x00"))
+		}
+
+		event := UnifiedEvent{
+			Timestamp: time.Now().UTC(),
+			HostName:  hostName,
+			EventType: "open",
+			EventID:   fmt.Sprintf("openat-%d-%d", e.Pid, time.Now().UnixNano()),
+			ProcessID: e.Pid,
+			Comm:      comm,
+			FilePath:  resolveOpenatPath(e.Dirfd, dirPath, filename),
+			Flags:     int32(e.Flags),
+		}
+
+		if e.ModeAvail {
+			event.Mode = e.Mode
+		}
+
+		printEvent(event)
+		if sendToAPI {
+			sendEventToAPI(event)
+		}
+	}
+}
+
 var colors = struct {
 	execve, open, connect, reset string
 }{
@@ -447,6 +525,19 @@ func sendEventToAPI(event UnifiedEvent) {
 			fmt.Printf("Server rejected event\n")
 		}
 	}()
+}
+
+func resolveOpenatPath(dirfd int32, dirPath, filename string) string {
+	if strings.HasPrefix(filename, "/") {
+		return filename
+	}
+	if dirPath != "" {
+		if strings.HasSuffix(dirPath, "/") {
+			return dirPath + filename
+		}
+		return dirPath + "/" + filename
+	}
+	return filename
 }
 
 func grpcReconnectLoop() {

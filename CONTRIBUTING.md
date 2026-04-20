@@ -6,26 +6,46 @@
 
 - Go 1.25+
 - clang, llvm, libbpf-dev
-- Linux headers (for eBPF)
+- bpftool (usually in `linux-tools-$(uname -r)`)
 - Elasticsearch 8.x (for integration tests)
 - Ollama (for AI analysis tests)
 
 ### Building
 
-```bash
-# Build analysis server
-cd cmd/analysis && go build -o analysis .
+The top-level `Makefile` is the source of truth for builds. It generates
+`bpf/vmlinux.h` from the running kernel's BTF, runs `go generate` (bpf2go) for
+each component that uses eBPF, and then compiles the Go binaries.
 
-# Build eBPF tracers (requires Linux)
-cd cmd/execve-tracer && go build -o execve-tracer .
-cd cmd/open-tracer && go build -o open-tracer .
+```bash
+# Build everything (tracers + agent + analysis)
+make            # alias for `make build`
+
+# Or build individual components
+make agent          # consolidated tracer (execve + open + openat + connect)
+make analysis       # AI analysis service (gRPC + HTTP)
+make execve-tracer  # standalone execve tracer
+make open-tracer    # standalone open tracer
+make openat-tracer  # standalone openat tracer
+
+# Clean binaries, bpf2go output, and vmlinux.h
+make clean
 ```
+
+Notes:
+
+- `bpf/vmlinux.h` is regenerated via `bpftool btf dump` whenever it is missing.
+  It is gitignored.
+- Each tracer's `cmd/<tracer>/gen.go` holds the `//go:generate` directive that
+  drives bpf2go; the agent's directives live in `cmd/agent/gen.go` and must be
+  kept in sync with `AGENT_BPF` / `AGENT_GENGO` in the `Makefile`.
+- The eBPF C sources live under `bpf/` and are shared between the standalone
+  tracers and the consolidated `agent`.
 
 ### Testing
 
 ```bash
-# Unit tests (all platforms)
-cd cmd/analysis && go test -v ./...
+# Unit tests
+make test
 
 # E2E tests (requires ES + Ollama)
 ./scripts/e2e-test.sh

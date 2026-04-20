@@ -28,6 +28,7 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 |------|-------------|
 | `execve-tracer.bpf.c` | Hooks `sys_enter_execve` |
 | `open-tracer.bpf.c` | Hooks `sys_enter_open` |
+| `openat-tracer.bpf.c` | Hooks `sys_enter_openat` with directory path resolution via `bpf_d_path` |
 | `connect-tracer.bpf.c` | Hooks `sys_enter_connect` |
 
 ## Quick Start
@@ -36,7 +37,7 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 
 ```bash
 # Install eBPF toolchain
-sudo apt install clang llvm linux-headers-$(uname -r)
+sudo apt install clang llvm libbpf-dev linux-tools-$(uname -r)
 
 # Start Elasticsearch
 docker run -d --name elasticsearch -p 9200:9200 \
@@ -53,12 +54,22 @@ ollama pull qwen2.5:7b
 ### Build
 
 ```bash
-# Build consolidated agent (execve + open + connect)
-cd cmd/agent && go build -o agent .
+# Build everything (tracers + agent + analysis)
+# Generates vmlinux.h and runs bpf2go automatically.
+make
 
-# Build analysis service
-cd cmd/analysis && go build -o analysis .
+# Or build individual components
+make agent
+make analysis
+make execve-tracer
+make open-tracer
+make openat-tracer
+
+# Remove binaries, generated bpf2go output, and vmlinux.h
+make clean
 ```
+
+> **Note:** `vmlinux.h` is generated from your running kernel's BTF data (via `bpftool`) and is gitignored. You only need to regenerate it when switching to a kernel with different data structures. Since the eBPF programs use CO-RE (Compile Once, Run Everywhere), the compiled programs are portable across kernel versions.
 
 ### Run
 
@@ -179,6 +190,7 @@ KernelHarbor/
 ├── bpf/                    # eBPF programs (C)
 │   ├── execve-tracer.bpf.c
 │   ├── open-tracer.bpf.c
+│   ├── openat-tracer.bpf.c
 │   └── connect-tracer.bpf.c
 ├── cmd/
 │   ├── agent/              # Unified tracer (execve + open + connect)
@@ -186,7 +198,7 @@ KernelHarbor/
 ├── proto/                  # Protocol Buffer definitions
 │   └── agent.proto
 ├── plan.md                 # Original design document
-└── README.md              # This file
+└── README.md               # This file
 ```
 
 ## CI/CD Limitations

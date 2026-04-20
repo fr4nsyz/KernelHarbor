@@ -114,42 +114,5 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
 }
 
 
-	// ipv4 branch
-	if (sa.sa_family == AF_INET) {
-		if (socklen < sizeof(addr4) ||
-		    bpf_probe_read_user(&addr4, sizeof(addr4), user_sa) != 0) {
-			bpf_ringbuf_discard(e, 0);
-			return 0;
-		}
-
-		e->family = AF_INET;
-		e->ip_len = 4;
-		e->port = bpf_ntohs(addr4.sin_port);
-		__builtin_memcpy(e->ip, &addr4.sin_addr.s_addr, 4);
-		bpf_ringbuf_submit(e, 0);
-		return 0;
-	}
-	
-	// ipv6 branch
-	if (sa.sa_family == AF_INET6) {
-		if (socklen < sizeof(addr6) ||
-		    bpf_probe_read_user(&addr6, sizeof(addr6), user_sa) != 0) {
-			bpf_ringbuf_discard(e, 0);
-			return 0;
-		}
-
-		e->family = AF_INET6;
-		e->ip_len = 16;
-		e->port = bpf_ntohs(addr6.sin6_port);
-		__builtin_memcpy(e->ip, &addr6.sin6_addr, 16);
-		bpf_ringbuf_submit(e, 0);
-		return 0;
-	}
-
-	bpf_ringbuf_discard(e, 0);
-	return 0;
-}
-
-
 
 

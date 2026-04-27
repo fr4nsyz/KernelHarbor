@@ -129,6 +129,14 @@ func main() {
 	})
 	log.Printf("Ollama client configured: %s %s", cfg.Ollama.Address, cfg.Ollama.Model)
 
+	if apiKey := os.Getenv("ABUSEIPDB_API_KEY"); apiKey != "" {
+		blacklistClient = NewBlacklistClient(BlacklistConfig{
+			AbuseIPDBAPIKey: apiKey,
+			CacheExpiry:     1 * time.Hour,
+		})
+		log.Printf("Blacklist client configured with AbuseIPDB")
+	}
+
 	processor = NewBatchProcessor(BatchProcessorConfig{
 		Workers:      cfg.Processor.Workers,
 		BatchSize:    cfg.Processor.BatchSize,
@@ -187,6 +195,18 @@ func main() {
 					confidence = 0.7
 				} else {
 					confidence = 0.3
+				}
+			}
+
+			if blacklistClient != nil && autoBlacklistCheck.Enabled {
+				blVerdict, blConf, blReason := checkBlacklist(context.Background(), &events[i])
+				if blVerdict == "suspicious" && blConf > float64(confidence) {
+					verdict = blVerdict
+					confidence = float32(blConf)
+					if events[i].Metadata == nil {
+						events[i].Metadata = make(map[string]any)
+					}
+					events[i].Metadata["blacklist_verdict"] = blReason
 				}
 			}
 

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package kernelharbor;
 
-option go_package = "github.com/fr4nsyz/vault/L_CACHES/KernelHarbor/proto/kernelharborpb";
+option go_package = "kernelharbor/proto/kernelharborpb";
 
 message Event {
   string timestamp = 1;

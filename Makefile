@@ -39,7 +39,7 @@ $(foreach t,$(TRACERS),$(eval $(call TRACER_RULES,$(t))))
 AGENT_BIN    := cmd/agent/agent
 AGENT_BPF    := bpf/execve-tracer.bpf.c bpf/open-tracer.bpf.c \
                 bpf/connect-tracer.bpf.c bpf/openat-tracer.bpf.c
-AGENT_GENGO  := cmd/agent/execvetracer_bpfeb.go cmd/agent/opentracer_bpfeb.go \
+AGENT_GENGO  := cmd/agent/execvetracer_bpfel.go cmd/agent/opentracer_bpfel.go \
                 cmd/agent/connecttracer_bpfel.go cmd/agent/openattracer_bpfel.go
 AGENT_GENOBJ := $(AGENT_GENGO:.go=.o)
 AGENT_SRC    := $(wildcard cmd/agent/*.go) $(wildcard cmd/agent/proto/*.go)

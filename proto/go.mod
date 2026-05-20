@@ -1,4 +1,4 @@
-module github.com/fr4nsyz/vault/L_CACHES/KernelHarbor/proto
+module kernelharbor/proto
 
 go 1.25
 

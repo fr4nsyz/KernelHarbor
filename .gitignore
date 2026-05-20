@@ -1,1 +1,17 @@
 bpf/vmlinux.h
+
+# Binaries
+execve-tracer
+open-tracer
+out
+cmd/*/execve-tracer
+cmd/*/open-tracer
+cmd/*/openat-tracer
+cmd/*/agent
+cmd/*/analysis
+
+# Generated eBPF object files
+cmd/*/*_bpf*.o
+
+# Test binaries
+cmd/*/test-*

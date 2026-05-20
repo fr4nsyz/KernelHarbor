@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
 	"flag"
 	"log"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
@@ -107,7 +109,7 @@ func main() {
 	defer cancel()
 
 	if len(cfg.Elasticsearch.Addresses) > 0 {
-		es, err := NewESClient(ESConfig{
+		client, err := NewESClient(ESConfig{
 			Addresses: cfg.Elasticsearch.Addresses,
 			Username:  cfg.Elasticsearch.Username,
 			Password:  cfg.Elasticsearch.Password,
@@ -116,8 +118,8 @@ func main() {
 		if err != nil {
 			log.Printf("Warning: Failed to connect to Elasticsearch: %v", err)
 		} else {
+			esClientInstance = client
 			log.Printf("Connected to Elasticsearch at %v", cfg.Elasticsearch.Addresses)
-			_ = es
 		}
 	}
 
@@ -337,8 +339,8 @@ func randomString(n int) string {
 	const letters = "abcdefghijklmnopqrstuvwxyz0123456789"
 	b := make([]byte, n)
 	for i := range b {
-		b[i] = letters[time.Now().UnixNano()%int64(len(letters))]
-		time.Sleep(time.Nanosecond)
+		idx, _ := rand.Int(rand.Reader, big.NewInt(int64(len(letters))))
+		b[i] = letters[idx.Int64()]
 	}
 	return string(b)
 }

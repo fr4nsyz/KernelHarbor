@@ -181,7 +181,7 @@ func (bp *BatchProcessor) runWorker(w worker) {
 }
 
 func (bp *BatchProcessor) analyzeBatch(batch Batch) {
-	ctx, cancel := context.WithTimeout(bp.ctx, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(bp.ctx, 5*time.Minute)
 	defer cancel()
 
 	if len(batch.Events) == 0 {
@@ -227,7 +227,7 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 				continue
 			}
 			seenGUIDs[e.ParentGUID] = true
-			chain, err := esClientInstance.SearchProcessTree(ctx, batch.HostName, e.ParentGUID, 1)
+			chain, err := esClientInstance.SearchProcessTree(ctx, batch.HostName, e.ParentGUID, 3)
 			if err != nil {
 				log.Printf("Failed to fetch process tree for parent %s: %v", e.ParentGUID, err)
 				continue

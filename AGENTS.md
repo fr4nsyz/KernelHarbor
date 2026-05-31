@@ -38,7 +38,8 @@ gRPC on port 9090 (configurable via `GRPC_ADDRESS`)
 | `ES_ADDRESSES` | `http://localhost:9200` | analysis |
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | analysis |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | analysis |
-| `GRPC_ADDRESS` | `:9090` | analysis |
+| `GRPC_ADDRESS` | `:9090` | analysis/agent |
+| `HTTP_ADDRESS` | `:8080` | analysis |
 | `PROTOCOL` | `both` | analysis (http, grpc, or both) |
 
 ## Important Constraints
@@ -46,15 +47,17 @@ gRPC on port 9090 (configurable via `GRPC_ADDRESS`)
 - **eBPF requires Linux**: Agent only works on Linux with kernel headers and root access
 - **CI has no eBPF**: GitHub Actions runners don't support eBPF - integration tests are skipped in CI
 - **External services required**: Analysis needs Elasticsearch 8.x and Ollama running
-- **Code generation**: Run `cd cmd/agent && go generate ./...` to regenerate eBPF bindings
-- **Kernel header path**: gen.go uses `/usr/src/kernels/6.19.8-200.fc43.x86_64` - update for other kernels
-- **Proto generation**: Run `protoc --go_out=. --go-grpc_out=. proto/agent.proto` after editing proto
+- **Code generation**: Run `cd cmd/agent && go generate ./...` to regenerate eBPF bindings. Same for standalone tracers (`cd cmd/execve-tracer && go generate ./...`, etc.)
+- **Proto generation**: Run `protoc --go_out=. --go-grpc_out=. proto/agent.proto` after editing proto, then fix package names: `sed -i 's/package kernelharborpb/package proto/' cmd/agent/proto/*.go` and `sed -i 's/package kernelharborpb/package pb/' cmd/analysis/pb/*.go`
 
 ## Project Structure
 
 ```
-cmd/agent/            # Consolidated tracer (execve + open + openat + connect)
-cmd/analysis/         # AI analysis pipeline (Go + gRPC)
+cmd/agent/          # Consolidated tracer (execve + open + openat + connect)
+cmd/execve-tracer/  # Standalone execve tracer
+cmd/open-tracer/    # Standalone open tracer
+cmd/openat-tracer/  # Standalone openat tracer
+cmd/analysis/       # AI analysis pipeline (Go + gRPC)
 proto/                # Protocol Buffer definitions
 bpf/                  # eBPF C programs
 scripts/              # test scripts
@@ -63,4 +66,4 @@ scripts/              # test scripts
 ## Pre-commit
 
 - Run `go fmt` before commits
-- Ensure unit tests pass: `cd cmd/analysis && go test ./...`
+- Ensure unit tests pass: `make test` (runs both analysis and agent tests)

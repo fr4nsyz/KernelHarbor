@@ -99,9 +99,6 @@ func (e *ESClient) buildMapping() []byte {
 		"settings": map[string]any{
 			"number_of_shards":   1,
 			"number_of_replicas": 0,
-			"index": map[string]any{
-				"max_mapped_value_length": 32766,
-			},
 		},
 		"mappings": map[string]any{
 			"properties": map[string]any{
@@ -169,11 +166,10 @@ func (e *ESClient) buildMapping() []byte {
 					"type": "integer",
 				},
 				"embedding": map[string]any{
-					"type":               "dense_vector",
-					"dims":               e.vectors,
-					"index":              true,
-					"similarity":         "cosine",
-					"indexing_threshold": 500,
+					"type":       "dense_vector",
+					"dims":       e.vectors,
+					"index":      true,
+					"similarity": "cosine",
 				},
 				"metadata": map[string]any{
 					"type":    "object",
@@ -227,82 +223,89 @@ func (e *ESClient) BulkIndex(ctx context.Context, events []Event) error {
 	return nil
 }
 
-func (e *ESClient) SearchProcessTree(ctx context.Context, hostName, processGUID string, depth int) ([]Event, error) {
-	query := map[string]any{
-		"query": map[string]any{
-			"bool": map[string]any{
-				"must": []any{
-					map[string]any{
-						"term": map[string]any{
-							"host.name": hostName,
+func (e *ESClient) SearchProcessTree(ctx context.Context, hostName, processGUID string, maxDepth int) ([]Event, error) {
+	var allEvents []Event
+	visited := map[string]bool{processGUID: true}
+	guidsToSearch := []string{processGUID}
+
+	for depth := 0; depth < maxDepth; depth++ {
+		if len(guidsToSearch) == 0 {
+			break
+		}
+
+		shouldClauses := make([]any, 0, len(guidsToSearch)*2)
+		for _, guid := range guidsToSearch {
+			shouldClauses = append(shouldClauses,
+				map[string]any{"term": map[string]any{"process.guid": guid}},
+				map[string]any{"term": map[string]any{"parent.guid": guid}},
+			)
+		}
+
+		query := map[string]any{
+			"query": map[string]any{
+				"bool": map[string]any{
+					"must": []any{
+						map[string]any{
+							"term": map[string]any{"host.name": hostName},
 						},
-					},
-					map[string]any{
-						"bool": map[string]any{
-							"should": []any{
-								map[string]any{
-									"term": map[string]any{
-										"process.guid": processGUID,
-									},
-								},
-								map[string]any{
-									"term": map[string]any{
-										"parent.guid": processGUID,
-									},
-								},
-							},
+						map[string]any{
+							"bool": map[string]any{"should": shouldClauses},
 						},
 					},
 				},
 			},
-		},
-		"sort": []any{
-			map[string]any{
-				"@timestamp": map[string]any{
-					"order": "desc",
+			"sort": []any{
+				map[string]any{
+					"@timestamp": map[string]any{"order": "desc"},
 				},
 			},
-		},
-		"size": 100,
-	}
+			"size": 100,
+		}
 
-	var buf bytes.Buffer
-	if err := json.NewEncoder(&buf).Encode(query); err != nil {
-		return nil, err
-	}
+		var buf bytes.Buffer
+		if err := json.NewEncoder(&buf).Encode(query); err != nil {
+			return nil, err
+		}
 
-	res, err := e.client.Search(
-		e.client.Search.WithContext(ctx),
-		e.client.Search.WithIndex(e.index),
-		e.client.Search.WithBody(&buf),
-	)
-	if err != nil {
-		return nil, err
-	}
-	defer res.Body.Close()
+		res, err := e.client.Search(
+			e.client.Search.WithContext(ctx),
+			e.client.Search.WithIndex(e.index),
+			e.client.Search.WithBody(&buf),
+		)
+		if err != nil {
+			return nil, err
+		}
+		defer res.Body.Close()
 
-	if res.IsError() {
-		return nil, fmt.Errorf("search error: %s", res.String())
-	}
+		if res.IsError() {
+			return nil, fmt.Errorf("search error: %s", res.String())
+		}
 
-	var sr struct {
-		Hits struct {
-			Hits []struct {
-				Source Event `json:"_source"`
+		var sr struct {
+			Hits struct {
+				Hits []struct {
+					Source Event `json:"_source"`
+				} `json:"hits"`
 			} `json:"hits"`
-		} `json:"hits"`
+		}
+
+		if err := json.NewDecoder(res.Body).Decode(&sr); err != nil {
+			return nil, err
+		}
+
+		var nextGuids []string
+		for _, hit := range sr.Hits.Hits {
+			allEvents = append(allEvents, hit.Source)
+			if hit.Source.ParentGUID != "" && !visited[hit.Source.ParentGUID] {
+				visited[hit.Source.ParentGUID] = true
+				nextGuids = append(nextGuids, hit.Source.ParentGUID)
+			}
+		}
+
+		guidsToSearch = nextGuids
 	}
 
-	if err := json.NewDecoder(res.Body).Decode(&sr); err != nil {
-		return nil, err
-	}
-
-	events := make([]Event, 0, len(sr.Hits.Hits))
-	for _, hit := range sr.Hits.Hits {
-		events = append(events, hit.Source)
-	}
-
-	return events, nil
+	return allEvents, nil
 }
 
 func (e *ESClient) VectorSearch(ctx context.Context, hostName, queryText string, embedding []float32, limit int) ([]Event, error) {

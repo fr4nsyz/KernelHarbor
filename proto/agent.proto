@@ -26,6 +26,14 @@ message Event {
   uint32 remote_port = 13;
   string local_addr = 14;
   uint32 local_port = 15;
+
+  // process ancestry
+  string process_guid = 16;
+  string parent_guid = 17;
+  uint32 parent_pid = 18;
+
+  // decoded open flags
+  string flags_desc = 19;
 }
 
 message IngestRequest {
@@ -45,6 +53,7 @@ message AnalysisResponse {
   string verdict = 1;
   float confidence = 2;
   string summary = 3;
+  repeated string evidence = 4;
 }
 
 service AgentService {

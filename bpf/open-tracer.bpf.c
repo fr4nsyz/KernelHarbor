@@ -3,18 +3,16 @@
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include "open.h"
+#include "process.h"
 
-char LICENSE[] SEC("license") = "GPL";  // place license in corresponding ELF section
+char LICENSE[] SEC("license") = "GPL";
 
-// struct to describe an invokation of the open syscall
 struct event {
-  u32 pid;              // the process ID of the process that is invoking the syscall
-  char comm[16];        // the executable name of the process that is invoking the syscall
-  char filename[256];   // the name of file that is being opened by the syscall
-  int flags;            // the flags indicating the file creation and file status the syscall is opening the file with
-  bool mode_avail;      // a boolean indicating if mode was provided to the syscall, and if anything is contained in event->mode
-  // NOTE: padding is inserted here to account for mode_avail being only a single byte
-  mode_t mode;          // the file mode bits related to permissions to be applied upon creating a new file
+	struct process_info proc;
+	char filename[256];
+	int flags;
+	bool mode_avail;
+	mode_t mode;
 };
 
 // ring buffer
@@ -46,30 +44,26 @@ struct {
 
 SEC("tracepoint/syscalls/sys_enter_open")
 int handle_open(struct trace_event_raw_sys_enter *ctx) {
-  struct event *e;
+	struct event *e;
 
-  e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
-  if (!e)
-    return 0;
+	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
+	if (!e)
+		return 0;
 
-  e->pid = bpf_get_current_pid_tgid() >> 32;    // shift out the 32 bits representing thread group ID
-  bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	read_process_info(&e->proc);
 
-  // args[0] = filename
-  const char *filename = (const char *)ctx->args[0];
-  bpf_probe_read_user_str(e->filename, sizeof(e->filename), filename);
+	const char *filename = (const char *)ctx->args[0];
+	bpf_probe_read_user_str(e->filename, sizeof(e->filename), filename);
 
-  // args[1] = flags (scalar value, not a pointer)
-  e->flags = (int)ctx->args[1];
+	e->flags = (int)ctx->args[1];
 
-  // args[2] = mode_t (only meaningful when O_CREAT is set in flags)
-  if (e->flags & (O_CREAT | O_TMPFILE)) {
-    e->mode = (mode_t)ctx->args[2];
-    e->mode_avail = true;
-  } else {
-    e->mode_avail = false;
-  }
+	if (e->flags & (O_CREAT | O_TMPFILE)) {
+		e->mode = (mode_t)ctx->args[2];
+		e->mode_avail = true;
+	} else {
+		e->mode_avail = false;
+	}
 
-  bpf_ringbuf_submit(e, 0);
-  return 0;
+	bpf_ringbuf_submit(e, 0);
+	return 0;
 }

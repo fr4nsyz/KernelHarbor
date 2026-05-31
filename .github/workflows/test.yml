@@ -10,26 +10,40 @@ jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    
+
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+    - name: Checkout code
+      uses: actions/checkout@v4
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
-        with:
-          go-version: '1.25'
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '1.25'
 
-      - name: Download dependencies
-        working-directory: ./cmd/analysis
-        run: go mod download
+    - name: Download dependencies (analysis)
+      working-directory: ./cmd/analysis
+      run: go mod download
 
-      - name: Run unit tests
-        working-directory: ./cmd/analysis
-        run: go test -v -race -coverprofile=coverage.out ./...
+    - name: Download dependencies (agent)
+      working-directory: ./cmd/agent
+      run: go mod download
 
-      - name: Upload coverage
-        uses: actions/upload-artifact@v4
-        with:
-          name: coverage
-          path: ./cmd/analysis/coverage.out
+    - name: Run analysis tests
+      working-directory: ./cmd/analysis
+      run: go test -v -race -coverprofile=coverage-analysis.out ./...
+
+    - name: Run agent tests
+      working-directory: ./cmd/agent
+      run: go test -v -race -coverprofile=coverage-agent.out ./...
+
+    - name: Upload coverage (analysis)
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-analysis
+        path: ./cmd/analysis/coverage-analysis.out
+
+    - name: Upload coverage (agent)
+      uses: actions/upload-artifact@v4
+      with:
+        name: coverage-agent
+        path: ./cmd/agent/coverage-agent.out

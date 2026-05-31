@@ -15,3 +15,10 @@ cmd/*/*_bpf*.o
 
 # Test binaries
 cmd/*/test-*
+
+# Logs and runtime
+*.pid
+analysis.log
+
+# Benchmark results
+bench-results/

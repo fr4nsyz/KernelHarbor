@@ -257,6 +257,8 @@ func TestEvent_ToSearchText(t *testing.T) {
 		EventType:   "execve",
 		ProcessID:   1234,
 		ParentPID:   1000,
+		ProcessGUID: "testhost-1234-9999",
+		ParentGUID:  "testhost-1000-5555",
 		ImagePath:   "/usr/bin/curl",
 		CommandLine: "curl http://example.com",
 		User:        "root",
@@ -270,6 +272,51 @@ func TestEvent_ToSearchText(t *testing.T) {
 
 	if !containsString(got, "execve") {
 		t.Errorf("ToSearchText() = %v, want to contain execve", got)
+	}
+
+	if !containsString(got, "parent:testhost-1000-5555") {
+		t.Errorf("ToSearchText() = %v, want to contain parent GUID", got)
+	}
+}
+
+func TestEvent_ProcessGUIDInSearchText(t *testing.T) {
+	tests := []struct {
+		name         string
+		event        Event
+		wantContains string
+	}{
+		{
+			name: "parent GUID included in search text",
+			event: Event{
+				EventType:   "execve",
+				ParentGUID:  "host-100-5000",
+				ImagePath:   "/bin/bash",
+				CommandLine: "bash -c id",
+			},
+			wantContains: "parent:host-100-5000",
+		},
+		{
+			name: "no parent GUID omits parent prefix",
+			event: Event{
+				EventType:   "execve",
+				ParentGUID:  "",
+				ImagePath:   "/bin/ls",
+				CommandLine: "ls -la",
+			},
+			wantContains: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := tt.event.ToSearchText()
+			if tt.wantContains != "" && !containsString(got, tt.wantContains) {
+				t.Errorf("ToSearchText() = %v, want to contain %v", got, tt.wantContains)
+			}
+			if tt.wantContains == "" && containsString(got, "parent:") {
+				t.Errorf("ToSearchText() = %v, should not contain parent: when ParentGUID is empty", got)
+			}
+		})
 	}
 }
 

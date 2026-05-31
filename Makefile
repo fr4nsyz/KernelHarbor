@@ -63,6 +63,7 @@ analysis: $(ANALYSIS_BIN)
 # --- test ---
 test:
 	cd cmd/analysis && go test ./...
+	cd cmd/agent && go test ./...
 
 # --- clean ---
 ALL_BIN_PATHS := $(foreach b,$(TRACERS) $(APPS),cmd/$(b)/$(b))

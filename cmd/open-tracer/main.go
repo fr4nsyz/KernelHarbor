@@ -7,40 +7,50 @@ import (
 	"log"
 	"os"
 	"os/signal"
+	"strings"
 
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
 )
 
-// match C struct exactly
-const MAX_ARGS = 20
-const ARG_LEN = 128
+type ProcessInfo struct {
+	Pid               uint32
+	Ppid              uint32
+	StartTimeNs       uint64
+	ParentStartTimeNs uint64
+	Comm              [16]byte
+	ParentComm        [16]byte
+}
+
+func generateGUID(pid uint32, startTimeNs uint64) string {
+	h, _ := os.Hostname()
+	if h == "" {
+		h = "unknown"
+	}
+	return fmt.Sprintf("%s-%d-%d", h, pid, startTimeNs)
+}
 
 type OpenEvent struct {
-	Pid       uint32
-	Comm      [16]byte
+	Proc      ProcessInfo
 	Filename  [256]byte
-	Flags     uint32
+	Flags     int32
 	ModeAvail bool
-	_         [3]byte // MATCH PADDING INSERTED IN EQUIVALENT C STRUCT
+	_         [3]byte
 	Mode      uint32
 }
 
 func main() {
-	// allow eBPF to lock memory
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
 
-	// load compiled eBPF objects
 	objs := openTracerObjects{}
 	if err := loadOpenTracerObjects(&objs, nil); err != nil {
 		log.Fatal(err)
 	}
 	defer objs.Close()
 
-	// attach to sys_enter_execve
 	tp, err := link.Tracepoint(
 		"syscalls",
 		"sys_enter_open",
@@ -52,16 +62,14 @@ func main() {
 	}
 	defer tp.Close()
 
-	// open ring buffer
 	rd, err := ringbuf.NewReader(objs.Events)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer rd.Close()
 
-	fmt.Println("👀 Listening for open events... (Ctrl+C to stop)")
+	fmt.Println("Listening for open events... (Ctrl+C to stop)")
 
-	// handle Ctrl+C
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
 
@@ -71,7 +79,6 @@ func main() {
 		rd.Close()
 	}()
 
-	// read events
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -84,16 +91,68 @@ func main() {
 			continue
 		}
 
-		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+		comm := string(bytes.TrimRight(e.Proc.Comm[:], "\x00"))
+		parentComm := string(bytes.TrimRight(e.Proc.ParentComm[:], "\x00"))
 		filename := string(bytes.TrimRight(e.Filename[:], "\x00"))
+		processGUID := generateGUID(e.Proc.Pid, e.Proc.StartTimeNs)
+		parentGUID := generateGUID(e.Proc.Ppid, e.Proc.ParentStartTimeNs)
 
-		fmt.Printf("\nPID: %d | COMM: %s\n", e.Pid, comm)
+		fmt.Printf("\nPID: %d | COMM: %s | PPID: %d | PCOMM: %s\n", e.Proc.Pid, comm, e.Proc.Ppid, parentComm)
+		fmt.Printf("GUID: %s | PGUID: %s\n", processGUID, parentGUID)
 		fmt.Printf("OPEN: %s\n", filename)
-
-		fmt.Printf("FLAGS: %d\n", e.Flags)
+		fmt.Printf("FLAGS: %s\n", decodeOpenFlags(uint32(e.Flags)))
 
 		if e.ModeAvail {
 			fmt.Printf("MODE: %d\n", e.Mode)
 		}
 	}
+}
+
+func decodeOpenFlags(flags uint32) string {
+	var parts []string
+
+	switch flags & 0x3 {
+	case 0:
+		parts = append(parts, "O_RDONLY")
+	case 1:
+		parts = append(parts, "O_WRONLY")
+	case 2:
+		parts = append(parts, "O_RDWR")
+	}
+
+	flagBits := []struct {
+		bit  uint32
+		name string
+	}{
+		{0o100, "O_CREAT"},
+		{0o200, "O_EXCL"},
+		{0o400, "O_NOCTTY"},
+		{0o1000, "O_TRUNC"},
+		{0o2000, "O_APPEND"},
+		{0o4000, "O_NONBLOCK"},
+		{0o10000, "O_DSYNC"},
+		{0o20000, "O_ASYNC"},
+		{0o40000, "O_DIRECT"},
+		{0o100000, "O_LARGEFILE"},
+		{0o200000, "O_DIRECTORY"},
+		{0o400000, "O_NOFOLLOW"},
+		{0o1000000, "O_NOATIME"},
+		{0o2000000, "O_CLOEXEC"},
+		{0o10000000, "O_PATH"},
+		{0o20200000, "O_TMPFILE"},
+	}
+
+	for _, fb := range flagBits {
+		if fb.bit == 0o20200000 {
+			if (flags & 0o20200000) == 0o20200000 {
+				parts = append(parts, fb.name)
+			}
+			continue
+		}
+		if flags&fb.bit != 0 {
+			parts = append(parts, fb.name)
+		}
+	}
+
+	return strings.Join(parts, "|")
 }

@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/binary"
+	"encoding/json"
 	"fmt"
 	"log"
+	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -30,14 +33,22 @@ const ARG_LEN = 128
 
 const AT_FDCWD = -100
 
+const (
+	batchMaxEvents = 64
+	batchInterval  = 500 * time.Millisecond
+)
+
 var (
 	grpcAddr   = os.Getenv("GRPC_ADDRESS")
+	httpAddr   = os.Getenv("HTTP_ADDRESS")
 	hostName   = getHostName()
+	agentPID   = uint32(os.Getpid())
 	grpcConn   *grpc.ClientConn
 	grpcClient pb.AgentServiceClient
-	sendToAPI  bool
+	useGRPC    bool
 	grpcMu     sync.RWMutex
 	grpcClosed atomic.Bool
+	httpClient *http.Client
 )
 
 func getHostName() string {
@@ -48,20 +59,33 @@ func getHostName() string {
 	return h
 }
 
+type ProcessInfo struct {
+	Pid               uint32
+	Ppid              uint32
+	StartTimeNs       uint64
+	ParentStartTimeNs uint64
+	Comm              [16]byte
+	ParentComm        [16]byte
+}
+
 type UnifiedEvent struct {
-	Timestamp time.Time `json:"@timestamp"`
-	HostName  string    `json:"host.name"`
-	EventType string    `json:"event.type"`
-	EventID   string    `json:"event.id"`
-	ProcessID uint32    `json:"process.pid"`
-	Comm      string    `json:"comm,omitempty"`
+	Timestamp   time.Time `json:"@timestamp"`
+	HostName    string    `json:"host.name"`
+	EventType   string    `json:"event.type"`
+	EventID     string    `json:"event.id"`
+	ProcessGUID string    `json:"process.guid,omitempty"`
+	ParentGUID  string    `json:"parent.guid,omitempty"`
+	ProcessID   uint32    `json:"process.pid"`
+	ParentPID   uint32    `json:"parent.pid,omitempty"`
+	Comm        string    `json:"comm,omitempty"`
 
 	ImagePath   string `json:"image.path,omitempty"`
 	CommandLine string `json:"command.line,omitempty"`
 
-	FilePath string `json:"file.path,omitempty"`
-	Flags    int32  `json:"flags,omitempty"`
-	Mode     uint32 `json:"mode,omitempty"`
+	FilePath  string `json:"file.path,omitempty"`
+	Flags     int32  `json:"flags,omitempty"`
+	FlagsDesc string `json:"flags.desc,omitempty"`
+	Mode      uint32 `json:"mode,omitempty"`
 
 	RemoteAddr string `json:"remote.addr,omitempty"`
 	RemotePort uint16 `json:"remote.port,omitempty"`
@@ -70,16 +94,14 @@ type UnifiedEvent struct {
 }
 
 type ExecveEvent struct {
-	Pid      uint32
-	Comm     [16]byte
+	Proc     ProcessInfo
 	Filename [256]byte
 	Argc     int32
 	Args     [MAX_ARGS][ARG_LEN]byte
 }
 
 type OpenEvent struct {
-	Pid       uint32
-	Comm      [16]byte
+	Proc      ProcessInfo
 	Filename  [256]byte
 	Flags     int32
 	ModeAvail bool
@@ -88,8 +110,7 @@ type OpenEvent struct {
 }
 
 type OpenatEvent struct {
-	Pid          uint32
-	Comm         [16]byte
+	Proc         ProcessInfo
 	Dirfd        int32
 	Filename     [256]byte
 	Flags        uint32
@@ -102,8 +123,7 @@ type OpenatEvent struct {
 }
 
 type ConnectEvent struct {
-	Pid        uint32
-	Comm       [16]byte
+	Proc       ProcessInfo
 	Fd         int32
 	Family     uint16
 	IpLen      uint8
@@ -114,10 +134,220 @@ type ConnectEvent struct {
 	LocalPort  uint16
 }
 
+type EventBatch struct {
+	Events     []UnifiedEvent `json:"events"`
+	HostName   string         `json:"host.name"`
+	ReceivedAt time.Time      `json:"received.at"`
+}
+
+type Batcher struct {
+	mu      sync.Mutex
+	events  []UnifiedEvent
+	timer   *time.Timer
+	flushCh chan []UnifiedEvent
+	stopCh  chan struct{}
+}
+
+func NewBatcher() *Batcher {
+	b := &Batcher{
+		events:  make([]UnifiedEvent, 0, batchMaxEvents),
+		flushCh: make(chan []UnifiedEvent, 16),
+		stopCh:  make(chan struct{}),
+	}
+	b.timer = time.AfterFunc(batchInterval, b.timerFlush)
+	b.timer.Stop()
+	go b.run()
+	return b
+}
+
+func (b *Batcher) Add(event UnifiedEvent) {
+	b.mu.Lock()
+	b.events = append(b.events, event)
+	if len(b.events) >= batchMaxEvents {
+		b.flushLocked()
+	} else if len(b.events) == 1 {
+		b.timer.Reset(batchInterval)
+	}
+	b.mu.Unlock()
+}
+
+func (b *Batcher) timerFlush() {
+	b.mu.Lock()
+	b.flushLocked()
+	b.mu.Unlock()
+}
+
+func (b *Batcher) flushLocked() {
+	if len(b.events) == 0 {
+		return
+	}
+	batch := make([]UnifiedEvent, len(b.events))
+	copy(batch, b.events)
+	b.events = b.events[:0]
+	b.timer.Stop()
+	select {
+	case b.flushCh <- batch:
+	default:
+		log.Printf("Batcher: flush channel full, dropping %d events", len(batch))
+	}
+}
+
+func (b *Batcher) run() {
+	for {
+		select {
+		case batch := <-b.flushCh:
+			sendBatch(batch)
+		case <-b.stopCh:
+			b.mu.Lock()
+			b.flushLocked()
+			b.mu.Unlock()
+			return
+		}
+	}
+}
+
+func (b *Batcher) Stop() {
+	close(b.stopCh)
+}
+
+func sendBatch(events []UnifiedEvent) {
+	if len(events) == 0 {
+		return
+	}
+
+	pbEvents := make([]*pb.Event, len(events))
+	for i, e := range events {
+		pbEvents[i] = eventToPb(e)
+	}
+
+	if useGRPC {
+		if sendViaGRPC(pbEvents) {
+			return
+		}
+		log.Printf("gRPC send failed, falling back to HTTP")
+	}
+
+	sendViaHTTP(events)
+}
+
+func eventToPb(e UnifiedEvent) *pb.Event {
+	return &pb.Event{
+		Timestamp:   e.Timestamp.Format(time.RFC3339),
+		HostName:    e.HostName,
+		EventType:   e.EventType,
+		EventId:     e.EventID,
+		ProcessId:   e.ProcessID,
+		Comm:        e.Comm,
+		ImagePath:   e.ImagePath,
+		CommandLine: e.CommandLine,
+		FilePath:    e.FilePath,
+		Flags:       e.Flags,
+		Mode:        e.Mode,
+		RemoteAddr:  e.RemoteAddr,
+		RemotePort:  uint32(e.RemotePort),
+		LocalAddr:   e.LocalAddr,
+		LocalPort:   uint32(e.LocalPort),
+		ProcessGuid: e.ProcessGUID,
+		ParentGuid:  e.ParentGUID,
+		ParentPid:   e.ParentPID,
+		FlagsDesc:   e.FlagsDesc,
+	}
+}
+
+func sendViaGRPC(pbEvents []*pb.Event) bool {
+	grpcMu.RLock()
+	if grpcClosed.Load() || grpcClient == nil {
+		grpcMu.RUnlock()
+		return false
+	}
+	client := grpcClient
+	grpcMu.RUnlock()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	resp, err := client.Ingest(ctx, &pb.IngestRequest{Events: pbEvents})
+	if err != nil {
+		log.Printf("gRPC Ingest failed: %v", err)
+		return false
+	}
+
+	if resp.Accepted > 0 {
+		log.Printf("gRPC: sent %d events, accepted %d", len(pbEvents), resp.Accepted)
+	}
+	return true
+}
+
+func sendViaHTTP(events []UnifiedEvent) {
+	if httpAddr == "" {
+		return
+	}
+
+	batch := EventBatch{
+		Events:     events,
+		HostName:   hostName,
+		ReceivedAt: time.Now(),
+	}
+
+	data, err := json.Marshal(batch)
+	if err != nil {
+		log.Printf("HTTP: failed to marshal batch: %v", err)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, "POST", httpAddr+"/ingest/batch", bytes.NewReader(data))
+	if err != nil {
+		log.Printf("HTTP: failed to create request: %v", err)
+		return
+	}
+	req.Header.Set("Content-Type", "application/json")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		log.Printf("HTTP: failed to send batch: %v", err)
+		return
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 300 {
+		log.Printf("HTTP: server returned %d", resp.StatusCode)
+	} else {
+		log.Printf("HTTP: sent %d events, status %d", len(events), resp.StatusCode)
+	}
+}
+
+func generateGUID(pid uint32, startTimeNs uint64) string {
+	return fmt.Sprintf("%s-%d-%d", hostName, pid, startTimeNs)
+}
+
+func formatIP(ipBytes []byte) string {
+	if len(ipBytes) == 4 {
+		return net.IP(ipBytes).String()
+	}
+	if len(ipBytes) == 16 {
+		return net.IP(ipBytes).String()
+	}
+	return ""
+}
+
 func main() {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
 	}
+
+	if grpcAddr == "" {
+		grpcAddr = os.Getenv("GRPC_ADDRESS")
+	}
+
+	useGRPC = grpcAddr != ""
+	if httpAddr == "" {
+		httpAddr = os.Getenv("HTTP_ADDRESS")
+	}
+
+	httpClient = &http.Client{Timeout: 15 * time.Second}
 
 	var execveObjs execveTracerObjects
 	var openObjs openTracerObjects
@@ -194,12 +424,12 @@ func main() {
 
 	fmt.Println("Agent listening for execve, open, openat, and connect events...")
 
-	if grpcAddr != "" {
-		sendToAPI = true
+	if useGRPC {
 		go grpcReconnectLoop()
-	} else {
-		fmt.Println("GRPC_ADDRESS not set, events will only be printed")
 	}
+
+	batcher := NewBatcher()
+	defer batcher.Stop()
 
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt)
@@ -219,15 +449,15 @@ func main() {
 		openatRd.Close()
 	}()
 
-	go readExecveRingbuf(execveRd)
-	go readOpenRingbuf(openRd)
-	go readConnectRingbuf(connectRd)
-	go readOpenatRingbuf(openatRd)
+	go readExecveRingbuf(execveRd, batcher)
+	go readOpenRingbuf(openRd, batcher)
+	go readConnectRingbuf(connectRd, batcher)
+	go readOpenatRingbuf(openatRd, batcher)
 
 	<-stop
 }
 
-func readExecveRingbuf(rd *ringbuf.Reader) {
+func readExecveRingbuf(rd *ringbuf.Reader, b *Batcher) {
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -240,7 +470,11 @@ func readExecveRingbuf(rd *ringbuf.Reader) {
 			continue
 		}
 
-		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+		if e.Proc.Pid == agentPID {
+			continue
+		}
+
+		comm := string(bytes.TrimRight(e.Proc.Comm[:], "\x00"))
 		filename := string(bytes.TrimRight(e.Filename[:], "\x00"))
 
 		var args []string
@@ -260,25 +494,29 @@ func readExecveRingbuf(rd *ringbuf.Reader) {
 			}
 		}
 
+		processGUID := generateGUID(e.Proc.Pid, e.Proc.StartTimeNs)
+		parentGUID := generateGUID(e.Proc.Ppid, e.Proc.ParentStartTimeNs)
+
 		event := UnifiedEvent{
 			Timestamp:   time.Now().UTC(),
 			HostName:    hostName,
 			EventType:   "execve",
-			EventID:     fmt.Sprintf("execve-%d-%d", e.Pid, time.Now().UnixNano()),
-			ProcessID:   e.Pid,
+			EventID:     fmt.Sprintf("execve-%d-%d", e.Proc.Pid, time.Now().UnixNano()),
+			ProcessGUID: processGUID,
+			ParentGUID:  parentGUID,
+			ProcessID:   e.Proc.Pid,
+			ParentPID:   e.Proc.Ppid,
 			Comm:        comm,
 			ImagePath:   filename,
 			CommandLine: commandLine,
 		}
 
 		printEvent(event)
-		if sendToAPI {
-			sendEventToAPI(event)
-		}
+		b.Add(event)
 	}
 }
 
-func readOpenRingbuf(rd *ringbuf.Reader) {
+func readOpenRingbuf(rd *ringbuf.Reader, b *Batcher) {
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -291,18 +529,29 @@ func readOpenRingbuf(rd *ringbuf.Reader) {
 			continue
 		}
 
-		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+		if e.Proc.Pid == agentPID {
+			continue
+		}
+
+		comm := string(bytes.TrimRight(e.Proc.Comm[:], "\x00"))
 		filename := string(bytes.TrimRight(e.Filename[:], "\x00"))
 
+		processGUID := generateGUID(e.Proc.Pid, e.Proc.StartTimeNs)
+		parentGUID := generateGUID(e.Proc.Ppid, e.Proc.ParentStartTimeNs)
+
 		event := UnifiedEvent{
-			Timestamp: time.Now().UTC(),
-			HostName:  hostName,
-			EventType: "open",
-			EventID:   fmt.Sprintf("open-%d-%d", e.Pid, time.Now().UnixNano()),
-			ProcessID: e.Pid,
-			Comm:      comm,
-			FilePath:  filename,
-			Flags:     e.Flags,
+			Timestamp:   time.Now().UTC(),
+			HostName:    hostName,
+			EventType:   "open",
+			EventID:     fmt.Sprintf("open-%d-%d", e.Proc.Pid, time.Now().UnixNano()),
+			ProcessGUID: processGUID,
+			ParentGUID:  parentGUID,
+			ProcessID:   e.Proc.Pid,
+			ParentPID:   e.Proc.Ppid,
+			Comm:        comm,
+			FilePath:    filename,
+			Flags:       e.Flags,
+			FlagsDesc:   decodeOpenFlags(uint32(e.Flags)),
 		}
 
 		if e.ModeAvail {
@@ -310,13 +559,11 @@ func readOpenRingbuf(rd *ringbuf.Reader) {
 		}
 
 		printEvent(event)
-		if sendToAPI {
-			sendEventToAPI(event)
-		}
+		b.Add(event)
 	}
 }
 
-func readConnectRingbuf(rd *ringbuf.Reader) {
+func readConnectRingbuf(rd *ringbuf.Reader, b *Batcher) {
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -329,7 +576,11 @@ func readConnectRingbuf(rd *ringbuf.Reader) {
 			continue
 		}
 
-		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+		if e.Proc.Pid == agentPID {
+			continue
+		}
+
+		comm := string(bytes.TrimRight(e.Proc.Comm[:], "\x00"))
 
 		if e.IpLen == 0 || e.IpLen > 16 {
 			continue
@@ -337,51 +588,43 @@ func readConnectRingbuf(rd *ringbuf.Reader) {
 
 		var remoteAddr string
 		if e.IpLen == 4 {
-			ip := make([]byte, 4)
-			copy(ip, e.Ip[:4])
-			remoteAddr = fmt.Sprintf("%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3])
+			remoteAddr = formatIP(e.Ip[:4])
 		} else if e.IpLen == 16 {
-			ip := make([]byte, 16)
-			copy(ip, e.Ip[:16])
-			remoteAddr = fmt.Sprintf("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-				ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7],
-				ip[8], ip[9], ip[10], ip[11], ip[12], ip[13], ip[14], ip[15])
+			remoteAddr = formatIP(e.Ip[:16])
 		}
 
 		var localAddr string
 		if e.LocalIpLen == 4 {
-			ip := make([]byte, 4)
-			copy(ip, e.LocalIp[:4])
-			localAddr = fmt.Sprintf("%d.%d.%d.%d", ip[0], ip[1], ip[2], ip[3])
+			localAddr = formatIP(e.LocalIp[:4])
 		} else if e.LocalIpLen == 16 {
-			ip := make([]byte, 16)
-			copy(ip, e.LocalIp[:16])
-			localAddr = fmt.Sprintf("%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x:%02x%02x",
-				ip[0], ip[1], ip[2], ip[3], ip[4], ip[5], ip[6], ip[7],
-				ip[8], ip[9], ip[10], ip[11], ip[12], ip[13], ip[14], ip[15])
+			localAddr = formatIP(e.LocalIp[:16])
 		}
 
+		processGUID := generateGUID(e.Proc.Pid, e.Proc.StartTimeNs)
+		parentGUID := generateGUID(e.Proc.Ppid, e.Proc.ParentStartTimeNs)
+
 		event := UnifiedEvent{
-			Timestamp:  time.Now().UTC(),
-			HostName:   hostName,
-			EventType:  "connect",
-			EventID:    fmt.Sprintf("connect-%d-%d", e.Pid, time.Now().UnixNano()),
-			ProcessID:  e.Pid,
-			Comm:       comm,
-			RemoteAddr: remoteAddr,
-			RemotePort: e.Port,
-			LocalAddr:  localAddr,
-			LocalPort:  e.LocalPort,
+			Timestamp:   time.Now().UTC(),
+			HostName:    hostName,
+			EventType:   "connect",
+			EventID:     fmt.Sprintf("connect-%d-%d", e.Proc.Pid, time.Now().UnixNano()),
+			ProcessGUID: processGUID,
+			ParentGUID:  parentGUID,
+			ProcessID:   e.Proc.Pid,
+			ParentPID:   e.Proc.Ppid,
+			Comm:        comm,
+			RemoteAddr:  remoteAddr,
+			RemotePort:  e.Port,
+			LocalAddr:   localAddr,
+			LocalPort:   e.LocalPort,
 		}
 
 		printEvent(event)
-		if sendToAPI {
-			sendEventToAPI(event)
-		}
+		b.Add(event)
 	}
 }
 
-func readOpenatRingbuf(rd *ringbuf.Reader) {
+func readOpenatRingbuf(rd *ringbuf.Reader, b *Batcher) {
 	for {
 		record, err := rd.Read()
 		if err != nil {
@@ -394,22 +637,33 @@ func readOpenatRingbuf(rd *ringbuf.Reader) {
 			continue
 		}
 
-		comm := string(bytes.TrimRight(e.Comm[:], "\x00"))
+		if e.Proc.Pid == agentPID {
+			continue
+		}
+
+		comm := string(bytes.TrimRight(e.Proc.Comm[:], "\x00"))
 		filename := string(bytes.TrimRight(e.Filename[:], "\x00"))
 		dirPath := ""
 		if e.DirPathAvail {
 			dirPath = string(bytes.TrimRight(e.DirPath[:], "\x00"))
 		}
 
+		processGUID := generateGUID(e.Proc.Pid, e.Proc.StartTimeNs)
+		parentGUID := generateGUID(e.Proc.Ppid, e.Proc.ParentStartTimeNs)
+
 		event := UnifiedEvent{
-			Timestamp: time.Now().UTC(),
-			HostName:  hostName,
-			EventType: "open",
-			EventID:   fmt.Sprintf("openat-%d-%d", e.Pid, time.Now().UnixNano()),
-			ProcessID: e.Pid,
-			Comm:      comm,
-			FilePath:  resolveOpenatPath(e.Dirfd, dirPath, filename),
-			Flags:     int32(e.Flags),
+			Timestamp:   time.Now().UTC(),
+			HostName:    hostName,
+			EventType:   "open",
+			EventID:     fmt.Sprintf("openat-%d-%d", e.Proc.Pid, time.Now().UnixNano()),
+			ProcessGUID: processGUID,
+			ParentGUID:  parentGUID,
+			ProcessID:   e.Proc.Pid,
+			ParentPID:   e.Proc.Ppid,
+			Comm:        comm,
+			FilePath:    resolveOpenatPath(e.Dirfd, dirPath, filename),
+			Flags:       int32(e.Flags),
+			FlagsDesc:   decodeOpenFlags(e.Flags),
 		}
 
 		if e.ModeAvail {
@@ -417,9 +671,7 @@ func readOpenatRingbuf(rd *ringbuf.Reader) {
 		}
 
 		printEvent(event)
-		if sendToAPI {
-			sendEventToAPI(event)
-		}
+		b.Add(event)
 	}
 }
 
@@ -446,18 +698,21 @@ func printEvent(event UnifiedEvent) {
 	}
 
 	fmt.Printf("\n%s┌─ %s EVENT ─────────────────────────────────────────┐%s\n", color, strings.ToUpper(event.EventType), colors.reset)
-	fmt.Printf("%s│%s  PID: %d  │  COMM: %s\n", color, colors.reset, event.ProcessID, event.Comm)
+	fmt.Printf("%s│%s PID: %d │ PPID: %d │ COMM: %s\n", color, colors.reset, event.ProcessID, event.ParentPID, event.Comm)
+	if event.ProcessGUID != "" {
+		fmt.Printf("%s│%s GUID: %s │ PGUID: %s\n", color, colors.reset, event.ProcessGUID, event.ParentGUID)
+	}
 	switch event.EventType {
 	case "execve":
-		fmt.Printf("%s│%s  IMAGE: %s\n", color, colors.reset, event.ImagePath)
-		fmt.Printf("%s│%s  ARGS:  %s\n", color, colors.reset, event.CommandLine)
+		fmt.Printf("%s│%s IMAGE: %s\n", color, colors.reset, event.ImagePath)
+		fmt.Printf("%s│%s ARGS: %s\n", color, colors.reset, event.CommandLine)
 	case "open":
-		fmt.Printf("%s│%s  FILE:  %s\n", color, colors.reset, event.FilePath)
-		fmt.Printf("%s│%s  FLAGS: %d\n", color, colors.reset, event.Flags)
+		fmt.Printf("%s│%s FILE: %s\n", color, colors.reset, event.FilePath)
+		fmt.Printf("%s│%s FLAGS: %s (%d)\n", color, colors.reset, event.FlagsDesc, event.Flags)
 	case "connect":
-		fmt.Printf("%s│%s  DEST:  %s:%d\n", color, colors.reset, event.RemoteAddr, event.RemotePort)
+		fmt.Printf("%s│%s DEST: %s:%d\n", color, colors.reset, event.RemoteAddr, event.RemotePort)
 		if event.LocalAddr != "" || event.LocalPort != 0 {
-			fmt.Printf("%s│%s  SRC:   %s:%d\n", color, colors.reset, event.LocalAddr, event.LocalPort)
+			fmt.Printf("%s│%s SRC: %s:%d\n", color, colors.reset, event.LocalAddr, event.LocalPort)
 		}
 	}
 	fmt.Printf("%s└──────────────────────────────────────────────────────┘%s\n", color, colors.reset)
@@ -472,59 +727,6 @@ func joinArgs(args []string) string {
 		result += arg
 	}
 	return result
-}
-
-func sendEventToAPI(event UnifiedEvent) {
-	grpcMu.RLock()
-	if grpcClosed.Load() || grpcClient == nil {
-		grpcMu.RUnlock()
-		return
-	}
-
-	pbEvent := &pb.Event{
-		Timestamp:   event.Timestamp.Format(time.RFC3339),
-		HostName:    event.HostName,
-		EventType:   event.EventType,
-		EventId:     event.EventID,
-		ProcessId:   event.ProcessID,
-		Comm:        event.Comm,
-		ImagePath:   event.ImagePath,
-		CommandLine: event.CommandLine,
-		FilePath:    event.FilePath,
-		Flags:       event.Flags,
-		Mode:        event.Mode,
-		RemoteAddr:  event.RemoteAddr,
-		RemotePort:  uint32(event.RemotePort),
-		LocalAddr:   event.LocalAddr,
-		LocalPort:   uint32(event.LocalPort),
-	}
-
-	client := grpcClient
-	grpcMu.RUnlock()
-
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-
-		grpcMu.RLock()
-		if grpcClosed.Load() {
-			grpcMu.RUnlock()
-			return
-		}
-		resp, err := client.Ingest(ctx, &pb.IngestRequest{Events: []*pb.Event{pbEvent}})
-		grpcMu.RUnlock()
-
-		if err != nil {
-			log.Printf("Failed to send event: %v", err)
-			return
-		}
-
-		if resp.Accepted > 0 {
-			fmt.Printf("Event sent successfully\n")
-		} else {
-			fmt.Printf("Server rejected event\n")
-		}
-	}()
 }
 
 func resolveOpenatPath(dirfd int32, dirPath, filename string) string {
@@ -562,8 +764,22 @@ func grpcReconnectLoop() {
 		fmt.Printf("Connected to gRPC server: %s\n", grpcAddr)
 		delay = initialReconnectDelay
 
+		grpcMu.RLock()
+		c := grpcClient
+		closed := grpcClosed.Load()
+		grpcMu.RUnlock()
+
+		if closed {
+			grpcMu.Lock()
+			conn.Close()
+			grpcMu.Unlock()
+			time.Sleep(delay)
+			delay = min(delay*2, maxReconnectDelay)
+			continue
+		}
+
 		testCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err = client.Ingest(testCtx, &pb.IngestRequest{})
+		_, err = c.Ingest(testCtx, &pb.IngestRequest{})
 		cancel()
 
 		if err != nil {
@@ -577,6 +793,87 @@ func grpcReconnectLoop() {
 			continue
 		}
 
-		break
+		grpcMu.RLock()
+		connState := grpcConn.GetState()
+		grpcMu.RUnlock()
+
+		_ = connState
+
+		waitCtx, waitCancel := context.WithCancel(context.Background())
+		go func() {
+			for {
+				grpcMu.RLock()
+				state := grpcConn.GetState()
+				grpcMu.RUnlock()
+				if state.String() == "READY" {
+					time.Sleep(1 * time.Second)
+					continue
+				}
+				waitCancel()
+				return
+			}
+		}()
+
+		<-waitCtx.Done()
+
+		grpcMu.Lock()
+		if !grpcClosed.Load() {
+			grpcClosed.Store(true)
+			conn.Close()
+		}
+		grpcMu.Unlock()
+
+		log.Printf("gRPC connection dropped, reconnecting...")
+		time.Sleep(delay)
+		delay = min(delay*2, maxReconnectDelay)
 	}
+}
+
+func decodeOpenFlags(flags uint32) string {
+	var parts []string
+
+	switch flags & 0x3 {
+	case 0:
+		parts = append(parts, "O_RDONLY")
+	case 1:
+		parts = append(parts, "O_WRONLY")
+	case 2:
+		parts = append(parts, "O_RDWR")
+	}
+
+	flagBits := []struct {
+		bit  uint32
+		name string
+	}{
+		{0o100, "O_CREAT"},
+		{0o200, "O_EXCL"},
+		{0o400, "O_NOCTTY"},
+		{0o1000, "O_TRUNC"},
+		{0o2000, "O_APPEND"},
+		{0o4000, "O_NONBLOCK"},
+		{0o10000, "O_DSYNC"},
+		{0o20000, "O_ASYNC"},
+		{0o40000, "O_DIRECT"},
+		{0o100000, "O_LARGEFILE"},
+		{0o200000, "O_DIRECTORY"},
+		{0o400000, "O_NOFOLLOW"},
+		{0o1000000, "O_NOATIME"},
+		{0o2000000, "O_CLOEXEC"},
+		{0o10000000, "O_PATH"},
+		{0o20200000, "O_TMPFILE"},
+	}
+
+	for _, fb := range flagBits {
+		if fb.bit == 0o20200000 {
+			if (flags & 0o20200000) == 0o20200000 {
+				parts = append(parts, fb.name)
+			}
+			continue
+		}
+		if flags&fb.bit != 0 {
+			parts = append(parts, fb.name)
+		}
+	}
+
+	return strings.Join(parts, "|")
 }

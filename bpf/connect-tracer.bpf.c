@@ -1,8 +1,9 @@
-//go:build ignore
+// go:build ignore
 #include "vmlinux.h"
 #include <bpf/bpf_core_read.h>
 #include <bpf/bpf_helpers.h>
 #include <bpf/bpf_endian.h>
+#include "process.h"
 
 #ifndef AF_INET
 #define AF_INET 2
@@ -17,14 +18,14 @@ char LICENSE[] SEC("license") = "GPL";
 
 // ring buffer
 struct {
-	__uint(type, BPF_MAP_TYPE_RINGBUF);
-	__uint(max_entries, 1 << 24);
-} events SEC(".maps");  // place in BTF maps ELF section (https://docs.ebpf.io/linux/concepts/maps/)
+__uint(type, BPF_MAP_TYPE_RINGBUF);
+__uint(max_entries, 1 << 24);
+} events SEC(".maps"); // place in BTF maps ELF section (https://docs.ebpf.io/linux/concepts/maps/)
 
 
 
 struct connect_event {
-	u32 pid;
+	struct process_info proc;
 	int fd;
 	u16 family;
 	u8 ip_len;
@@ -33,7 +34,6 @@ struct connect_event {
 	u8 local_ip_len;
 	u8 local_ip[16];
 	u16 local_port;
-	char comm[16];
 };
 
 SEC("tracepoint/syscalls/sys_enter_connect")
@@ -45,18 +45,13 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
 	struct sockaddr sa;
 	struct sockaddr_in addr4;
 	struct sockaddr_in6 addr6;
-	
+
 	void *user_sa = (void *)ctx->args[1];
 
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) return 0;
 
-
-	u32 pid = bpf_get_current_pid_tgid() >> 32;
-	e->pid = pid;
-
-
-	bpf_get_current_comm(&e->comm, sizeof(e->comm));
+	read_process_info(&e->proc);
 
 	e->fd = ctx->args[0];
 	int socklen = ctx->args[2];

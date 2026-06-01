@@ -54,14 +54,39 @@ func (h *grpcHandler) Ingest(ctx context.Context, req *pb.IngestRequest) (*pb.In
 			event.EventID = generateEventID()
 		}
 
+		query := event.CommandLine
+		if query == "" {
+			query = event.FilePath
+		}
+		if query == "" {
+			query = event.RemoteAddr
+		}
+
+		verdict := "benign"
+		confidence := float32(0.0)
+		if query != "" {
+			if hasSuspiciousPattern(query) {
+				verdict = "suspicious"
+				confidence = 0.7
+			} else {
+				confidence = 0.3
+			}
+		}
+
+		log.Printf("Received event: %s [%s] PID=%d CMD=%s | VERDICT=%s CONFIDENCE=%.2f",
+			event.EventType, event.EventID, event.ProcessID, event.CommandLine, verdict, confidence)
+
 		events = append(events, event)
 		processor.Submit(event)
 	}
 
 	if esClientInstance != nil {
-		if err := esClientInstance.BulkIndex(ctx, events); err != nil {
-			log.Printf("Failed to index gRPC events: %v", err)
-		}
+		evts := events
+		go func() {
+			if err := esClientInstance.BulkIndex(context.Background(), evts); err != nil {
+				log.Printf("Failed to index gRPC events: %v", err)
+			}
+		}()
 	}
 
 	return &pb.IngestResponse{Accepted: uint32(len(req.Events))}, nil

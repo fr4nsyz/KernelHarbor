@@ -73,6 +73,8 @@ func (bp *BatchProcessor) Submit(event Event) {
 	case bp.inputCh <- event:
 	case <-bp.ctx.Done():
 		log.Printf("Dropping event %s: processor stopped", event.EventID)
+	default:
+		log.Printf("Dropping event %s: processor busy", event.EventID)
 	}
 }
 

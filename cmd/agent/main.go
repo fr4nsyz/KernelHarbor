@@ -151,7 +151,7 @@ type Batcher struct {
 func NewBatcher() *Batcher {
 	b := &Batcher{
 		events:  make([]UnifiedEvent, 0, batchMaxEvents),
-		flushCh: make(chan []UnifiedEvent, 16),
+		flushCh: make(chan []UnifiedEvent, 4096),
 		stopCh:  make(chan struct{}),
 	}
 	b.timer = time.AfterFunc(batchInterval, b.timerFlush)
@@ -380,6 +380,12 @@ func main() {
 	}
 	defer execveTp.Close()
 
+	execveatTp, err := link.Tracepoint("syscalls", "sys_enter_execveat", execveObjs.HandleExecveat, nil)
+	if err != nil {
+		log.Fatalf("failed to attach execveat tracepoint: %v", err)
+	}
+	defer execveatTp.Close()
+
 	openTp, err := link.Tracepoint("syscalls", "sys_enter_open", openObjs.HandleOpen, nil)
 	if err != nil {
 		log.Fatalf("failed to attach open tracepoint: %v", err)
@@ -431,36 +437,34 @@ func main() {
 	batcher := NewBatcher()
 	defer batcher.Stop()
 
-	stop := make(chan os.Signal, 1)
-	signal.Notify(stop, os.Interrupt)
-
-	go func() {
-		<-stop
-		fmt.Println("Stopping...")
-		grpcMu.Lock()
-		if grpcConn != nil {
-			grpcClosed.Store(true)
-			grpcConn.Close()
-		}
-		grpcMu.Unlock()
-		execveRd.Close()
-		openRd.Close()
-		connectRd.Close()
-		openatRd.Close()
-	}()
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
 
 	go readExecveRingbuf(execveRd, batcher)
 	go readOpenRingbuf(openRd, batcher)
 	go readConnectRingbuf(connectRd, batcher)
 	go readOpenatRingbuf(openatRd, batcher)
 
-	<-stop
+	<-ctx.Done()
+	fmt.Println("Stopping...")
+	grpcMu.Lock()
+	if grpcConn != nil {
+		grpcClosed.Store(true)
+		grpcConn.Close()
+	}
+	grpcMu.Unlock()
+	execveRd.Close()
+	openRd.Close()
+	connectRd.Close()
+	openatRd.Close()
 }
 
 func readExecveRingbuf(rd *ringbuf.Reader, b *Batcher) {
+	log.Println("execve reader started")
 	for {
 		record, err := rd.Read()
 		if err != nil {
+			log.Printf("execve reader exiting: %v", err)
 			return
 		}
 
@@ -471,8 +475,13 @@ func readExecveRingbuf(rd *ringbuf.Reader, b *Batcher) {
 		}
 
 		if e.Proc.Pid == agentPID {
+			log.Printf("execve skipping agent self (PID=%d)", e.Proc.Pid)
 			continue
 		}
+
+		log.Printf("execve raw event: pid=%d ppid=%d comm=%s filename=%s argc=%d",
+			e.Proc.Pid, e.Proc.Ppid, string(bytes.TrimRight(e.Proc.Comm[:], "\x00")),
+			string(bytes.TrimRight(e.Filename[:], "\x00")), e.Argc)
 
 		comm := string(bytes.TrimRight(e.Proc.Comm[:], "\x00"))
 		filename := string(bytes.TrimRight(e.Filename[:], "\x00"))

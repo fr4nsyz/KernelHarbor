@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
+	"encoding/json"
 	"flag"
 	"log"
 	"math/big"
@@ -62,7 +63,7 @@ func getDefaultConfig() Config {
 			EmbedDim   int    `yaml:"embed_dim" json:"embed_dim"`
 		}{
 			Address:    "http://localhost:11434",
-			Model:      "qwen2.5:7b",
+			Model:      "qwen2.5:1.5b",
 			EmbedModel: "nomic-embed-text",
 			EmbedDim:   VectorDim,
 		},
@@ -158,9 +159,18 @@ func main() {
 	})
 
 	router.POST("/ingest", func(c *gin.Context) {
+		raw, err := c.GetRawData()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+			return
+		}
+
 		var events []Event
-		if err := c.ShouldBindJSON(&events); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+		var single Event
+		if err := json.Unmarshal(raw, &single); err == nil && single.EventType != "" {
+			events = []Event{single}
+		} else if err := json.Unmarshal(raw, &events); err != nil || len(events) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "expected a single event object or array of events"})
 			return
 		}
 
@@ -210,9 +220,23 @@ func main() {
 	})
 
 	router.POST("/ingest/batch", func(c *gin.Context) {
+		raw, err := c.GetRawData()
+		if err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
+			return
+		}
+
 		var batch EventBatch
-		if err := c.ShouldBindJSON(&batch); err != nil {
+		var single Event
+		if err := json.Unmarshal(raw, &single); err == nil && single.EventType != "" {
+			batch.Events = []Event{single}
+		} else if err := json.Unmarshal(raw, &batch); err != nil {
 			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		if len(batch.Events) == 0 {
+			c.JSON(http.StatusBadRequest, gin.H{"error": "no events in batch"})
 			return
 		}
 

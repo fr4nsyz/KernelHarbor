@@ -159,7 +159,7 @@ Response:
 | `ES_ADDRESSES` | `http://localhost:9200` | Elasticsearch addresses |
 | `ES_INDEX` | `kb-events` | Events index |
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | Ollama |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | Analysis model |
+| `OLLAMA_MODEL` | `qwen2.5:1.5b` | Analysis model |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `PROTOCOL` | `both` | HTTP protocol: `http`, `grpc`, or `both` |
 | `GRPC_ADDRESS` | `:9090` | gRPC server address |

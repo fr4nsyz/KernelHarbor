@@ -19,8 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	AgentService_Ingest_FullMethodName  = "/kernelharbor.AgentService/Ingest"
-	AgentService_Analyze_FullMethodName = "/kernelharbor.AgentService/Analyze"
+	AgentService_Ingest_FullMethodName       = "/kernelharbor.AgentService/Ingest"
+	AgentService_Analyze_FullMethodName      = "/kernelharbor.AgentService/Analyze"
+	AgentService_FetchActions_FullMethodName = "/kernelharbor.AgentService/FetchActions"
 )
 
 // AgentServiceClient is the client API for AgentService service.
@@ -29,6 +30,7 @@ const (
 type AgentServiceClient interface {
 	Ingest(ctx context.Context, in *IngestRequest, opts ...grpc.CallOption) (*IngestResponse, error)
 	Analyze(ctx context.Context, in *AnalysisRequest, opts ...grpc.CallOption) (*AnalysisResponse, error)
+	FetchActions(ctx context.Context, in *ActionRequest, opts ...grpc.CallOption) (*ActionResponse, error)
 }
 
 type agentServiceClient struct {
@@ -59,12 +61,23 @@ func (c *agentServiceClient) Analyze(ctx context.Context, in *AnalysisRequest, o
 	return out, nil
 }
 
+func (c *agentServiceClient) FetchActions(ctx context.Context, in *ActionRequest, opts ...grpc.CallOption) (*ActionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ActionResponse)
+	err := c.cc.Invoke(ctx, AgentService_FetchActions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 // AgentServiceServer is the server API for AgentService service.
 // All implementations must embed UnimplementedAgentServiceServer
 // for forward compatibility.
 type AgentServiceServer interface {
 	Ingest(context.Context, *IngestRequest) (*IngestResponse, error)
 	Analyze(context.Context, *AnalysisRequest) (*AnalysisResponse, error)
+	FetchActions(context.Context, *ActionRequest) (*ActionResponse, error)
 	mustEmbedUnimplementedAgentServiceServer()
 }
 
@@ -80,6 +93,9 @@ func (UnimplementedAgentServiceServer) Ingest(context.Context, *IngestRequest) (
 }
 func (UnimplementedAgentServiceServer) Analyze(context.Context, *AnalysisRequest) (*AnalysisResponse, error) {
 	return nil, status.Error(codes.Unimplemented, "method Analyze not implemented")
+}
+func (UnimplementedAgentServiceServer) FetchActions(context.Context, *ActionRequest) (*ActionResponse, error) {
+	return nil, status.Error(codes.Unimplemented, "method FetchActions not implemented")
 }
 func (UnimplementedAgentServiceServer) mustEmbedUnimplementedAgentServiceServer() {}
 func (UnimplementedAgentServiceServer) testEmbeddedByValue()                      {}
@@ -138,6 +154,24 @@ func _AgentService_Analyze_Handler(srv interface{}, ctx context.Context, dec fun
 	return interceptor(ctx, in, info, handler)
 }
 
+func _AgentService_FetchActions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ActionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(AgentServiceServer).FetchActions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: AgentService_FetchActions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(AgentServiceServer).FetchActions(ctx, req.(*ActionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 // AgentService_ServiceDesc is the grpc.ServiceDesc for AgentService service.
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
@@ -152,6 +186,10 @@ var AgentService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "Analyze",
 			Handler:    _AgentService_Analyze_Handler,
+		},
+		{
+			MethodName: "FetchActions",
+			Handler:    _AgentService_FetchActions_Handler,
 		},
 	},
 	Streams:  []grpc.StreamDesc{},

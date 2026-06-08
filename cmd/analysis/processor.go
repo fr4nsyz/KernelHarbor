@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -279,6 +281,29 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 
 		log.Printf("Analysis result for host %s: %s (%.2f) - %s",
 			batch.HostName, verdict, confidence, summary)
+
+		if verdict == "malicious" && confidence >= 0.7 {
+			for _, e := range batch.Events {
+				actionStore.Add(batch.HostName, Action{
+					ID:         generateEventID(),
+					Timestamp:  time.Now(),
+					HostName:   batch.HostName,
+					ActionType: ActionKillPID,
+					Target:     strconv.Itoa(int(e.ProcessID)),
+					Reason:     fmt.Sprintf("AI analysis: %s (%.2f) - %s", verdict, confidence, summary),
+				})
+				if e.EventType == "connect" && e.RemoteAddr != "" {
+					actionStore.Add(batch.HostName, Action{
+						ID:         generateEventID(),
+						Timestamp:  time.Now(),
+						HostName:   batch.HostName,
+						ActionType: ActionBlockIP,
+						Target:     e.RemoteAddr,
+						Reason:     fmt.Sprintf("Malicious connection to %s:%d", e.RemoteAddr, e.RemotePort),
+					})
+				}
+			}
+		}
 	} else {
 		log.Printf("No Ollama client configured, skipping AI analysis")
 		log.Printf("Would analyze %d events for host %s", len(batch.Events), batch.HostName)

@@ -43,6 +43,7 @@ type grpcHandler struct {
 
 func (h *grpcHandler) Ingest(ctx context.Context, req *pb.IngestRequest) (*pb.IngestResponse, error) {
 	events := make([]Event, 0, len(req.Events))
+	pbActions := []*pb.Action{}
 
 	for _, e := range req.Events {
 		event := convertPbToEvent(e)
@@ -68,6 +69,21 @@ func (h *grpcHandler) Ingest(ctx context.Context, req *pb.IngestRequest) (*pb.In
 			if hasSuspiciousPattern(query) {
 				verdict = "suspicious"
 				confidence = 0.7
+				action := Action{
+					ID:         generateEventID(),
+					Timestamp:  time.Now(),
+					HostName:   event.HostName,
+					ActionType: ActionKillPID,
+					Target:     strconv.Itoa(int(event.ProcessID)),
+					Reason:     fmt.Sprintf("Heuristic match: %s", query),
+				}
+				actionStore.Add(event.HostName, action)
+				pbActions = append(pbActions, &pb.Action{
+					Id:         action.ID,
+					ActionType: string(action.ActionType),
+					Target:     action.Target,
+					Reason:     action.Reason,
+				})
 			} else {
 				confidence = 0.3
 			}
@@ -89,7 +105,24 @@ func (h *grpcHandler) Ingest(ctx context.Context, req *pb.IngestRequest) (*pb.In
 		}()
 	}
 
-	return &pb.IngestResponse{Accepted: uint32(len(req.Events))}, nil
+	return &pb.IngestResponse{
+		Accepted: uint32(len(req.Events)),
+		Actions:  pbActions,
+	}, nil
+}
+
+func (h *grpcHandler) FetchActions(ctx context.Context, req *pb.ActionRequest) (*pb.ActionResponse, error) {
+	actions := actionStore.Fetch(req.HostName)
+	pbActions := make([]*pb.Action, len(actions))
+	for i, a := range actions {
+		pbActions[i] = &pb.Action{
+			Id:         a.ID,
+			ActionType: string(a.ActionType),
+			Target:     a.Target,
+			Reason:     a.Reason,
+		}
+	}
+	return &pb.ActionResponse{Actions: pbActions}, nil
 }
 
 func (h *grpcHandler) Analyze(ctx context.Context, req *pb.AnalysisRequest) (*pb.AnalysisResponse, error) {

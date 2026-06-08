@@ -261,6 +261,7 @@ func (x *IngestRequest) GetEvents() []*Event {
 type IngestResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Accepted      uint32                 `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	Actions       []*Action              `protobuf:"bytes,2,rep,name=actions,proto3" json:"actions,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -300,6 +301,13 @@ func (x *IngestResponse) GetAccepted() uint32 {
 		return x.Accepted
 	}
 	return 0
+}
+
+func (x *IngestResponse) GetActions() []*Action {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
 }
 
 type AnalysisRequest struct {
@@ -422,6 +430,162 @@ func (x *AnalysisResponse) GetEvidence() []string {
 	return nil
 }
 
+type Action struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	ActionType    string                 `protobuf:"bytes,2,opt,name=action_type,json=actionType,proto3" json:"action_type,omitempty"`
+	Target        string                 `protobuf:"bytes,3,opt,name=target,proto3" json:"target,omitempty"`
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *Action) Reset() {
+	*x = Action{}
+	mi := &file_proto_agent_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *Action) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*Action) ProtoMessage() {}
+
+func (x *Action) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use Action.ProtoReflect.Descriptor instead.
+func (*Action) Descriptor() ([]byte, []int) {
+	return file_proto_agent_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *Action) GetId() string {
+	if x != nil {
+		return x.Id
+	}
+	return ""
+}
+
+func (x *Action) GetActionType() string {
+	if x != nil {
+		return x.ActionType
+	}
+	return ""
+}
+
+func (x *Action) GetTarget() string {
+	if x != nil {
+		return x.Target
+	}
+	return ""
+}
+
+func (x *Action) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+type ActionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	HostName      string                 `protobuf:"bytes,1,opt,name=host_name,json=hostName,proto3" json:"host_name,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActionRequest) Reset() {
+	*x = ActionRequest{}
+	mi := &file_proto_agent_proto_msgTypes[6]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActionRequest) ProtoMessage() {}
+
+func (x *ActionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_proto_msgTypes[6]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActionRequest.ProtoReflect.Descriptor instead.
+func (*ActionRequest) Descriptor() ([]byte, []int) {
+	return file_proto_agent_proto_rawDescGZIP(), []int{6}
+}
+
+func (x *ActionRequest) GetHostName() string {
+	if x != nil {
+		return x.HostName
+	}
+	return ""
+}
+
+type ActionResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Actions       []*Action              `protobuf:"bytes,1,rep,name=actions,proto3" json:"actions,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ActionResponse) Reset() {
+	*x = ActionResponse{}
+	mi := &file_proto_agent_proto_msgTypes[7]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ActionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ActionResponse) ProtoMessage() {}
+
+func (x *ActionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_proto_agent_proto_msgTypes[7]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ActionResponse.ProtoReflect.Descriptor instead.
+func (*ActionResponse) Descriptor() ([]byte, []int) {
+	return file_proto_agent_proto_rawDescGZIP(), []int{7}
+}
+
+func (x *ActionResponse) GetActions() []*Action {
+	if x != nil {
+		return x.Actions
+	}
+	return nil
+}
+
 var File_proto_agent_proto protoreflect.FileDescriptor
 
 const file_proto_agent_proto_rawDesc = "" +
@@ -459,9 +623,10 @@ const file_proto_agent_proto_rawDesc = "" +
 	"\n" +
 	"flags_desc\x18\x13 \x01(\tR\tflagsDesc\"<\n" +
 	"\rIngestRequest\x12+\n" +
-	"\x06events\x18\x01 \x03(\v2\x13.kernelharbor.EventR\x06events\",\n" +
+	"\x06events\x18\x01 \x03(\v2\x13.kernelharbor.EventR\x06events\"\\\n" +
 	"\x0eIngestResponse\x12\x1a\n" +
-	"\baccepted\x18\x01 \x01(\rR\baccepted\"D\n" +
+	"\baccepted\x18\x01 \x01(\rR\baccepted\x12.\n" +
+	"\aactions\x18\x02 \x03(\v2\x14.kernelharbor.ActionR\aactions\"D\n" +
 	"\x0fAnalysisRequest\x12\x1b\n" +
 	"\thost_name\x18\x01 \x01(\tR\bhostName\x12\x14\n" +
 	"\x05query\x18\x02 \x01(\tR\x05query\"\x82\x01\n" +
@@ -471,10 +636,21 @@ const file_proto_agent_proto_rawDesc = "" +
 	"confidence\x18\x02 \x01(\x02R\n" +
 	"confidence\x12\x18\n" +
 	"\asummary\x18\x03 \x01(\tR\asummary\x12\x1a\n" +
-	"\bevidence\x18\x04 \x03(\tR\bevidence2\x9d\x01\n" +
+	"\bevidence\x18\x04 \x03(\tR\bevidence\"i\n" +
+	"\x06Action\x12\x0e\n" +
+	"\x02id\x18\x01 \x01(\tR\x02id\x12\x1f\n" +
+	"\vaction_type\x18\x02 \x01(\tR\n" +
+	"actionType\x12\x16\n" +
+	"\x06target\x18\x03 \x01(\tR\x06target\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\",\n" +
+	"\rActionRequest\x12\x1b\n" +
+	"\thost_name\x18\x01 \x01(\tR\bhostName\"@\n" +
+	"\x0eActionResponse\x12.\n" +
+	"\aactions\x18\x01 \x03(\v2\x14.kernelharbor.ActionR\aactions2\xe8\x01\n" +
 	"\fAgentService\x12C\n" +
 	"\x06Ingest\x12\x1b.kernelharbor.IngestRequest\x1a\x1c.kernelharbor.IngestResponse\x12H\n" +
-	"\aAnalyze\x12\x1d.kernelharbor.AnalysisRequest\x1a\x1e.kernelharbor.AnalysisResponseB#Z!kernelharbor/proto/kernelharborpbb\x06proto3"
+	"\aAnalyze\x12\x1d.kernelharbor.AnalysisRequest\x1a\x1e.kernelharbor.AnalysisResponse\x12I\n" +
+	"\fFetchActions\x12\x1b.kernelharbor.ActionRequest\x1a\x1c.kernelharbor.ActionResponseB#Z!kernelharbor/proto/kernelharborpbb\x06proto3"
 
 var (
 	file_proto_agent_proto_rawDescOnce sync.Once
@@ -488,25 +664,32 @@ func file_proto_agent_proto_rawDescGZIP() []byte {
 	return file_proto_agent_proto_rawDescData
 }
 
-var file_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
+var file_proto_agent_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_proto_agent_proto_goTypes = []any{
 	(*Event)(nil),            // 0: kernelharbor.Event
 	(*IngestRequest)(nil),    // 1: kernelharbor.IngestRequest
 	(*IngestResponse)(nil),   // 2: kernelharbor.IngestResponse
 	(*AnalysisRequest)(nil),  // 3: kernelharbor.AnalysisRequest
 	(*AnalysisResponse)(nil), // 4: kernelharbor.AnalysisResponse
+	(*Action)(nil),           // 5: kernelharbor.Action
+	(*ActionRequest)(nil),    // 6: kernelharbor.ActionRequest
+	(*ActionResponse)(nil),   // 7: kernelharbor.ActionResponse
 }
 var file_proto_agent_proto_depIdxs = []int32{
 	0, // 0: kernelharbor.IngestRequest.events:type_name -> kernelharbor.Event
-	1, // 1: kernelharbor.AgentService.Ingest:input_type -> kernelharbor.IngestRequest
-	3, // 2: kernelharbor.AgentService.Analyze:input_type -> kernelharbor.AnalysisRequest
-	2, // 3: kernelharbor.AgentService.Ingest:output_type -> kernelharbor.IngestResponse
-	4, // 4: kernelharbor.AgentService.Analyze:output_type -> kernelharbor.AnalysisResponse
-	3, // [3:5] is the sub-list for method output_type
-	1, // [1:3] is the sub-list for method input_type
-	1, // [1:1] is the sub-list for extension type_name
-	1, // [1:1] is the sub-list for extension extendee
-	0, // [0:1] is the sub-list for field type_name
+	5, // 1: kernelharbor.IngestResponse.actions:type_name -> kernelharbor.Action
+	5, // 2: kernelharbor.ActionResponse.actions:type_name -> kernelharbor.Action
+	1, // 3: kernelharbor.AgentService.Ingest:input_type -> kernelharbor.IngestRequest
+	3, // 4: kernelharbor.AgentService.Analyze:input_type -> kernelharbor.AnalysisRequest
+	6, // 5: kernelharbor.AgentService.FetchActions:input_type -> kernelharbor.ActionRequest
+	2, // 6: kernelharbor.AgentService.Ingest:output_type -> kernelharbor.IngestResponse
+	4, // 7: kernelharbor.AgentService.Analyze:output_type -> kernelharbor.AnalysisResponse
+	7, // 8: kernelharbor.AgentService.FetchActions:output_type -> kernelharbor.ActionResponse
+	6, // [6:9] is the sub-list for method output_type
+	3, // [3:6] is the sub-list for method input_type
+	3, // [3:3] is the sub-list for extension type_name
+	3, // [3:3] is the sub-list for extension extendee
+	0, // [0:3] is the sub-list for field type_name
 }
 
 func init() { file_proto_agent_proto_init() }
@@ -520,7 +703,7 @@ func file_proto_agent_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_proto_agent_proto_rawDesc), len(file_proto_agent_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   5,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

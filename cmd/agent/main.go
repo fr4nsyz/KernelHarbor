@@ -10,10 +10,13 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/cilium/ebpf/link"
@@ -275,6 +278,9 @@ func sendViaGRPC(pbEvents []*pb.Event) bool {
 	if resp.Accepted > 0 {
 		log.Printf("gRPC: sent %d events, accepted %d", len(pbEvents), resp.Accepted)
 	}
+	if len(resp.Actions) > 0 {
+		executeActions(resp.Actions)
+	}
 	return true
 }
 
@@ -317,6 +323,30 @@ func sendViaHTTP(events []UnifiedEvent) {
 	} else {
 		log.Printf("HTTP: sent %d events, status %d", len(events), resp.StatusCode)
 	}
+
+	var result struct {
+		Accepted int          `json:"accepted"`
+		Actions  []httpAction `json:"actions"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && len(result.Actions) > 0 {
+		pbActions := make([]*pb.Action, len(result.Actions))
+		for i, a := range result.Actions {
+			pbActions[i] = &pb.Action{
+				Id:         a.ID,
+				ActionType: a.ActionType,
+				Target:     a.Target,
+				Reason:     a.Reason,
+			}
+		}
+		executeActions(pbActions)
+	}
+}
+
+type httpAction struct {
+	ID         string `json:"id"`
+	ActionType string `json:"action.type"`
+	Target     string `json:"target"`
+	Reason     string `json:"reason"`
 }
 
 func generateGUID(pid uint32, startTimeNs uint64) string {
@@ -432,6 +462,7 @@ func main() {
 
 	if useGRPC {
 		go grpcReconnectLoop()
+		go fetchActionsLoop()
 	}
 
 	batcher := NewBatcher()
@@ -749,6 +780,57 @@ func resolveOpenatPath(dirfd int32, dirPath, filename string) string {
 		return dirPath + "/" + filename
 	}
 	return filename
+}
+
+func executeActions(actions []*pb.Action) {
+	for _, a := range actions {
+		switch a.ActionType {
+		case "KILL_PID":
+			pid, err := strconv.Atoi(a.Target)
+			if err != nil {
+				log.Printf("exec: invalid PID %q: %v", a.Target, err)
+				continue
+			}
+			if uint32(pid) == agentPID {
+				log.Printf("exec: refusing to kill self (PID=%d)", pid)
+				continue
+			}
+			log.Printf("ACTION KILL_PID %d (reason: %s)", pid, a.Reason)
+			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+				log.Printf("ACTION KILL_PID %d failed: %v", pid, err)
+			}
+		case "BLOCK_IP":
+			log.Printf("ACTION BLOCK_IP %s (reason: %s)", a.Target, a.Reason)
+			cmd := exec.Command("iptables", "-A", "INPUT", "-s", a.Target, "-j", "DROP")
+			if out, err := cmd.CombinedOutput(); err != nil {
+				log.Printf("ACTION BLOCK_IP %s failed: %v, output: %s", a.Target, err, string(out))
+			}
+		default:
+			log.Printf("ACTION unknown type: %s", a.ActionType)
+		}
+	}
+}
+
+func fetchActionsLoop() {
+	for {
+		time.Sleep(5 * time.Second)
+		grpcMu.RLock()
+		client := grpcClient
+		grpcMu.RUnlock()
+		if client == nil {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		resp, err := client.FetchActions(ctx, &pb.ActionRequest{HostName: hostName})
+		cancel()
+		if err != nil {
+			log.Printf("FetchActions failed: %v", err)
+			continue
+		}
+		if len(resp.Actions) > 0 {
+			executeActions(resp.Actions)
+		}
+	}
 }
 
 func grpcReconnectLoop() {

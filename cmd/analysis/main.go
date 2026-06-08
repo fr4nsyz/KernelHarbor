@@ -5,11 +5,13 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -197,6 +199,14 @@ func main() {
 				if hasSuspiciousPattern(query) {
 					verdict = "suspicious"
 					confidence = 0.7
+					actionStore.Add(events[i].HostName, Action{
+						ID:         generateEventID(),
+						Timestamp:  time.Now(),
+						HostName:   events[i].HostName,
+						ActionType: ActionKillPID,
+						Target:     strconv.Itoa(int(events[i].ProcessID)),
+						Reason:     fmt.Sprintf("Heuristic match: %s", query),
+					})
 				} else {
 					confidence = 0.3
 				}
@@ -214,8 +224,17 @@ func main() {
 			}
 		}
 
+		hostName := ""
+		if len(events) > 0 {
+			hostName = events[0].HostName
+		}
+		actions := actionStore.Fetch(hostName)
+		if actions == nil {
+			actions = []Action{}
+		}
 		c.JSON(http.StatusAccepted, gin.H{
 			"accepted": len(events),
+			"actions":  actions,
 		})
 	})
 
@@ -255,6 +274,25 @@ func main() {
 				batch.Events[i].HostName = batch.HostName
 			}
 
+			query := batch.Events[i].CommandLine
+			if query == "" {
+				query = batch.Events[i].FilePath
+			}
+			if query == "" {
+				query = batch.Events[i].RemoteAddr
+			}
+
+			if autoAnalyzeByDefault && query != "" && hasSuspiciousPattern(query) {
+				actionStore.Add(batch.Events[i].HostName, Action{
+					ID:         generateEventID(),
+					Timestamp:  time.Now(),
+					HostName:   batch.Events[i].HostName,
+					ActionType: ActionKillPID,
+					Target:     strconv.Itoa(int(batch.Events[i].ProcessID)),
+					Reason:     fmt.Sprintf("Heuristic match: %s", query),
+				})
+			}
+
 			processor.Submit(batch.Events[i])
 		}
 
@@ -264,9 +302,23 @@ func main() {
 			}
 		}
 
+		actions := actionStore.Fetch(batch.HostName)
+		if actions == nil {
+			actions = []Action{}
+		}
 		c.JSON(http.StatusAccepted, gin.H{
 			"accepted": len(batch.Events),
+			"actions":  actions,
 		})
+	})
+
+	router.GET("/actions/:hostname", func(c *gin.Context) {
+		hostname := c.Param("hostname")
+		actions := actionStore.Fetch(hostname)
+		if actions == nil {
+			actions = []Action{}
+		}
+		c.JSON(http.StatusOK, gin.H{"actions": actions})
 	})
 
 	router.POST("/analyze", func(c *gin.Context) {

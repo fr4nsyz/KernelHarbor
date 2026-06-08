@@ -1,10 +1,10 @@
 # KernelHarbor
 
-Linux kernel security monitoring with eBPF and AI-powered analysis.
+Linux kernel security monitoring with eBPF and AI-powered analysis and automated response.
 
 ## Overview
 
-KernelHarbor captures system events (execve, open, network) using eBPF and analyzes them with an AI pipeline for threat detection.
+KernelHarbor captures system events (execve, open, network) using eBPF and analyzes them with an AI pipeline for threat detection and response. When malicious behavior is detected, it can automatically kill processes or block network connections.
 
 <!-- ``` -->
 <!-- ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐ -->
@@ -95,11 +95,26 @@ curl -X POST http://localhost:8080/analyze \
 
 1. **eBPF Tracers** hook kernel syscalls (`execve`, `open`, `connect`)
 2. **Ring buffer** passes events to user-space Go program
-3. **gRPC** streams events to analysis service
+3. **gRPC** sends events to analysis service
 4. **Elasticsearch** stores events with vector embeddings
 5. **Async workers** batch events and analyze with Ollama
 6. **Vector search** finds semantically similar past events
 7. **LLM** generates security verdict
+
+### Response Flow
+
+Automatic response actions are delivered to the agent through two mechanisms:
+
+- **Immediate (heuristic)** — When the regex heuristic matches a known-bad pattern on ingest, an action (e.g., `KILL_PID`) is returned directly in the `IngestResponse` of the same RPC call. The agent executes it instantly — zero additional latency.
+
+- **Delayed (AI)** — After the async AI analysis completes (1-3s), if the verdict is malicious, an action is stored in memory. The agent polls `FetchActions(hostname)` every 5 seconds and executes any pending actions.
+
+| Trigger | Latency | Action Examples |
+|---------|---------|----------------|
+| Regex heuristic match | Same RPC response | `KILL_PID` |
+| AI "malicious" verdict | ~5-8s (batch + poll) | `KILL_PID`, `BLOCK_IP` |
+
+The agent runs as root and executes actions using OS primitives: `SIGKILL` for process termination and `iptables` for IP blocking.
 
 ### gRPC Service
 
@@ -107,8 +122,9 @@ The analysis service exposes a gRPC API on port 9090 (configurable):
 
 | Method | Description |
 |--------|-------------|
-| `Ingest` | Stream events to the analysis pipeline |
+| `Ingest` | Send events to the analysis pipeline, returns heuristic actions |
 | `Analyze` | Query AI analysis for a specific event |
+| `FetchActions` | Poll for pending AI-derived actions (e.g., `KILL_PID`, `BLOCK_IP`) |
 
 ### Behavior Embedding
 
@@ -128,7 +144,9 @@ This allows finding **semantically similar attacks**, not just keyword matches.
 |----------|--------|-------------|
 | `/health` | GET | Health check |
 | `/ingest` | POST | Ingest events |
+| `/ingest/batch` | POST | Ingest batched events |
 | `/analyze` | POST | Query AI analysis |
+| `/actions/:hostname` | GET | Fetch pending actions for a host (used by agent polling) |
 
 ### Analyze Example
 

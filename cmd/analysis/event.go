@@ -1,6 +1,9 @@
 package main
 
-import "time"
+import (
+	"sync"
+	"time"
+)
 
 const (
 	EventTypeExecve  = "execve"
@@ -205,6 +208,45 @@ func extractFileType(path string) string {
 		}
 	}
 	return "unknown"
+}
+
+type ActionType string
+
+const (
+	ActionKillPID ActionType = "KILL_PID"
+	ActionBlockIP ActionType = "BLOCK_IP"
+)
+
+type Action struct {
+	ID         string     `json:"id"`
+	Timestamp  time.Time  `json:"timestamp"`
+	HostName   string     `json:"host.name"`
+	ActionType ActionType `json:"action.type"`
+	Target     string     `json:"target"`
+	Reason     string     `json:"reason"`
+}
+
+type ActionStore struct {
+	mu      sync.Mutex
+	actions map[string][]Action
+}
+
+func NewActionStore() *ActionStore {
+	return &ActionStore{actions: make(map[string][]Action)}
+}
+
+func (s *ActionStore) Add(hostname string, action Action) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.actions[hostname] = append(s.actions[hostname], action)
+}
+
+func (s *ActionStore) Fetch(hostname string) []Action {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	actions := s.actions[hostname]
+	delete(s.actions, hostname)
+	return actions
 }
 
 func joinNonEmpty(s []string, sep string) string {

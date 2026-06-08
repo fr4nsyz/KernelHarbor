@@ -4,7 +4,7 @@
 // - protoc             v6.31.1
 // source: proto/agent.proto
 
-package pb
+package kernelharborpb
 
 import (
 	context "context"

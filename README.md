@@ -6,12 +6,12 @@ Linux kernel security monitoring with eBPF and AI-powered analysis and automated
 
 KernelHarbor captures system events (execve, open, network) using eBPF and analyzes them with an AI pipeline for threat detection and response. When malicious behavior is detected, it can automatically kill processes or block network connections.
 
-<!-- ``` -->
-<!-- ┌──────────────┐     ┌──────────────┐     ┌──────────────┐     ┌──────────────┐ -->
-<!-- │  eBPF        │     │   gRPC        │     │Elasticsearch │     │   Ollama    │ -->
-<!-- │  Tracers     │────▶│  (ingest)     │────▶│  (storage)   │────▶│ (AI Engine) │ -->
-<!-- └──────────────┘     └──────────────┘     └──────────────┘     └──────────────┘ -->
-<!-- ``` -->
+The demo below was done on the same device for simplicity. Analysis server ideally would run on a separate machine than the one running the agent.
+
+https://github.com/user-attachments/assets/99ef4a91-b9aa-411d-b847-0af310006de9
+
+
+[alternate demo link](https://youtu.be/noDXemJ9wUM)
 
 ## Components
 

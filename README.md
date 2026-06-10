@@ -2,6 +2,17 @@
 
 Linux kernel security monitoring with eBPF and AI-powered analysis and automated response.
 
+Credits:
+
+[Kien Do](https://github.com/kienmarkdo) Huge thanks to him for guiding me through how production-grade EDRs work!
+
+[Francois Coleongco (Me)](https://github.com/fr4nsyz): Detection & Response Engine + execve / execveat syscall monitoring
+
+[John Tyler](https://github.com/john00003): open / openat syscall monitoring
+
+[Mehar Klair](https://github.com/meharklair): connect syscall monitoring
+
+
 ## Overview
 
 KernelHarbor captures system events (execve, open, network) using eBPF and analyzes them with an AI pipeline for threat detection and response. When malicious behavior is detected, it can automatically kill processes or block network connections.

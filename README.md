@@ -272,6 +272,8 @@ ES_ADDRESSES=http://localhost:9200 OLLAMA_ADDRESS=http://localhost:11434 \
 
 Measured against a labeled dataset of 190 events (101 benign, 49 suspicious, 40 malicious):
 
+NOTE: Because this was not tested against a large sample size. True accuracy may differ.
+
 | Metric | Value |
 |--------|-------|
 | Accuracy | 100.00% |

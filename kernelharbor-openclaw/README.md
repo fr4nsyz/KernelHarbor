@@ -1,80 +1,106 @@
-# KernelHarbor — OpenClaw Extension
+# KernelHarbor OpenClaw Extension
 
-Linux kernel security monitoring for [OpenClaw](https://openclose.ai) Gateway —
-eBPF tracing, heuristic detection, and optional LLM-powered analysis.
-
-## Features
-
-- **Real-time kernel monitoring** via eBPF (execve, open, openat, connect)
-- **Three-tier detection**: heuristic (real-time) → LLM (delayed) → summaries
-- **Automatic actions**: KILL_PID, BLOCK_IP via regex heuristics — zero LLM latency
-- **Optional LLM analysis**: Ollama, OpenAI, or Anthropic — gated by interestingness scoring
-- **Dashboard SPA**: view alerts, stats, submit feedback
-- **Feedback loop**: confirmed alerts become RAG incidents for better future analysis
-- **OpenClaw integrated**: gateway methods, HTTP routes, sidecar lifecycle management
+Linux kernel security monitoring for [OpenClaw](https://openclose.ai) Gateway:
+Falco-based event collection, heuristic detection, HMAC-signed pipeline, and optional LLM-powered analysis.
 
 ## Architecture
 
+```
+Falco (eBPF) → falcosidekick → signer:28079 (HMAC-SHA256) → webhook:28080 (verify) → analysis :8080
+```
+
 ```mermaid
 graph TB
-    subgraph "OpenClaw Gateway"
-        P[Plugin: plugin.mjs] -->|register| GW[Gateway WS]
-        P -->|registerHttpRoute| R["/kh/*"]
+    subgraph "Event Source"
+        F[Falco - eBPF] -->|http_output| FS[falcosidekick]
+        FS -->|webhook| SG[HMAC Signer :28079]
+        SG -->|X-KH-Signature-256| WH[Webhook :28080]
+        WH -->|verify HMAC| CNV[Convert to Event]
     end
 
-    subgraph "Sidecar (managed by plugin)"
-        AG[Agent - eBPF] -->|gRPC Ingest| AN[Analysis :9090]
-        AN -->|Tier 1| HEUR[Regex Heuristic]
-        HEUR -->|KILL_PID/BLOCK_IP| AG
-        AN -->|Tier 2| LLM[LLM Backend]
-        LLM -->|alerts only| AL[Alert Store :8080]
-        AL -->|feedback| INC[Incident Store]
+    subgraph "OpenClaw Gateway"
+        P[Plugin: plugin.mjs] -->|registerHttpRoute| R["/kh/*"]
+        P -->|startSidecar| AN[Analysis binary]
+    end
+
+    subgraph "Tier 1: Heuristic (real-time)"
+        CNV -->|POST /ingest| H1[Regex Pattern Matcher]
+        H1 -->|match| H2[Action: KILL_PID / BLOCK_IP]
+        H1 -->|no match| H3[Batch Processor]
+    end
+
+    subgraph "Tier 2: LLM (optional)"
+        H3 -->|batch| IS[Interestingness Scorer]
+        IS -->|score < 0.6| D1[Skip]
+        IS -->|score >= 0.6| LLM[LLM Backend]
+        LLM -->|alerts only| AL[Alert Store]
+        AL -->|confirmed| RAG[Incident Store]
+    end
+
+    subgraph "Persistence"
+        AL <-->|index + reload| ES[Elasticsearch kb-alerts]
     end
 
     subgraph "User"
-        D[Dashboard SPA :8181] -->|/kh/api/* proxy| AN
-        D -->|confirm/fp| AL
+        D[Dashboard SPA :8181] -->|/kh/api/*| AN
     end
 
-    P -->|startSidecar| AG
-    P -->|startSidecar| AN
+    P -->|manages| SG
+    P -->|manages| WH
     P -->|polls every 10s| AL
-    P -->|kernelharbor.alert| GW
+    P -->|kernelharbor.alert| GW[Gateway WS]
 ```
+
+When `KH_SIGNING_SECRET` is empty, HMAC is disabled and the pipeline falls back to
+direct `falcosidekick → webhook` (backward compatible).
 
 ## Installation
 
-### From OpenClaw Marketplace
+### One-Liner (recommended)
 
-1. Open OpenClaw Gateway admin
-2. Browse Extensions → install KernelHarbor
-3. Configure settings (optional)
-4. The sidecar starts automatically
+```bash
+curl -fsSL https://raw.githubusercontent.com/fr4nsyz/KernelHarbor/main/kernelharbor-openclaw/install.sh | bash
+```
+
+Installs Go, Falco, falcosidekick (with graceful skipping if sudo unavailable), clones the repo,
+runs `npm install` and `setup.mjs`.
+
+```bash
+cd ~/kernelharbor/kernelharbor-openclaw
+./cli/status.mjs       # check status
+./cli/dashboard.mjs    # open browser dashboard
+```
 
 ### Manual
 
 ```bash
-# Clone and install
 git clone https://github.com/fr4nsyz/KernelHarbor.git
 cd KernelHarbor/kernelharbor-openclaw
 npm install
-
-# Build binaries
-./cli/setup.mjs
-
-# Start dashboard
-./cli/dashboard.mjs
-
-# Check status
-./cli/status.mjs
+node ./cli/setup.mjs
 ```
 
 ### OpenClaw Plugin Path
 
 ```bash
-# Link to OpenClaw plugins directory
 ln -s $(pwd) /path/to/openclaw/plugins/kernelharbor-openclaw
 ```
+
+### Docker Compose
+
+```bash
+docker compose up -d elasticsearch analysis
+
+# With Falco + falcosidekick:
+docker compose --profile falco up -d
+
+# With LLM (Ollama):
+docker compose --profile llm up -d
+```
+
+See `docker-compose.yml` for service details. The HMAC signer and webhook are provided
+by the OpenClaw plugin (not containerized); configure falcosidekick to forward through
+the signer: `WEBHOOK_ADDRESS: "http://host.docker.internal:28079/falco/event"`.
 
 ## Plugin API
 
@@ -82,7 +108,7 @@ ln -s $(pwd) /path/to/openclaw/plugins/kernelharbor-openclaw
 
 | Method | Params | Returns |
 |--------|--------|---------|
-| `kernelharbor.status` | — | `{ sidecarRunning, alertCount, recentAlerts }` |
+| `kernelharbor.status` | | `{ sidecarRunning, alertCount, recentAlerts }` |
 | `kernelharbor.alert.feedback` | `{ alertId, feedback }` | `{ status }` |
 
 ### Pushed Events
@@ -102,81 +128,99 @@ ln -s $(pwd) /path/to/openclaw/plugins/kernelharbor-openclaw
 
 | ID | Description |
 |----|-------------|
-| `kernelharbor.sidecar` | Manages agent + analysis binary lifecycle |
-| `kernelharbor.alert-poller` | Polls alerts from analysis, pushes to gateway |
+| `kernelharbor.sidecar` | Manages analysis binary, signer, and falcosidekick lifecycle with auto-restart and exponential backoff |
 
 ## Configuration
 
-Configure via OpenClaw Gateway plugin settings:
+### Plugin Config (openclaw.plugin.json)
 
 ```json
 {
   "analysisAddr": "localhost:9090",
   "dashboardPort": 8181,
   "autoStart": true,
-  "binaryDir": ""
+  "falcoRulesPath": "",
+  "falcoConfigPath": "",
+  "falcoSidekickPort": 2801,
+  "falcoWebhookPort": 28080,
+  "signerPort": 28079,
+  "signingSecret": ""
 }
 ```
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `analysisAddr` | `localhost:9090` | gRPC address for the analysis service |
+| `dashboardPort` | `8181` | Dashboard SPA port |
+| `autoStart` | `true` | Auto-start sidecar processes on gateway startup |
+| `falcoRulesPath` | `""` | Path to Falco rules (default: `rules/kernelharbor-rules.yaml`) |
+| `falcoConfigPath` | `""` | Path to Falco configuration file (optional) |
+| `falcoSidekickPort` | `2801` | Port for falcosidekick to receive events from Falco |
+| `falcoWebhookPort` | `28080` | Port for the webhook receiver |
+| `signerPort` | `28079` | Port for the HMAC signing proxy |
+| `signingSecret` | `""` | Shared secret for HMAC-SHA256 (empty = disabled) |
 
 ### Environment Variables
 
 | Variable | Default | Description |
 |----------|---------|-------------|
-| `KH_LLM_BACKEND` | `none` | LLM backend: `none`, `ollama`, `openai`, `anthropic` |
+| `KH_SIGNING_SECRET` | `` | HMAC secret for pipeline signing (empty = disabled) |
+| `KH_API_KEY` | `` | API key auth for analysis HTTP endpoints (empty = disabled) |
 | `KH_DASHBOARD_PORT` | `8181` | Dashboard server port |
-| `KH_REPO` | `https://github.com/fr4nsyz/KernelHarbor.git` | Repo for `kh-setup` |
+| `KH_REPO` | `https://github.com/fr4nsyz/KernelHarbor.git` | Repo for `setup.mjs` |
+| `LLM_BACKEND` | `none` | LLM backend: `none`, `ollama`, `openai`, `anthropic` |
+| `ES_ADDRESSES` | `http://localhost:9200` | Elasticsearch addresses |
+| `OLLAMA_ADDRESS` | `http://localhost:11434` | Ollama server address |
+| `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama analysis model |
 
-## Three-Tier Detection
+## Security
 
-```mermaid
-graph LR
-    subgraph "Tier 1 — Heuristic"
-        T1I[Ingest] --> T1R[Regex Match]
-        T1R -->|match| T1A[KILL_PID / BLOCK_IP]
-        T1R -->|no match| T1B[Batch]
-    end
+### HMAC-SHA256 Pipeline Signing
 
-    subgraph "Tier 2 — LLM Analysis"
-        T1B --> T2S[Interestingness Score]
-        T2S -->|< 0.6| T2SK[Skip]
-        T2S -->|>= 0.6| T2L[LLM]
-        T2L -->|alert + evidence| T2A[Alert Store]
-    end
+When `KH_SIGNING_SECRET` (or `signingSecret` config) is set:
 
-    subgraph "Tier 3 — Periodic"
-        T3T[Timer] --> T3S[Summary]
-        T3S -->|dashboard| T3D[UI]
-    end
+- `signer.mjs` runs as a proxy between falcosidekick and the webhook
+- Computes HMAC-SHA256 of the raw request body, sets `X-KH-Signature-256` header
+- The webhook in `plugin.mjs` verifies the signature using `timingSafeEqual`
+- Requests without a valid signature are rejected with 401
 
-    T2A -->|confirm| RAG[Incident Store]
-    RAG -->|future retrieval| T2L
-```
+### API Key Auth
 
-## Commands
+When `KH_API_KEY` is set on the analysis service, all endpoints except `/health` and `/ready`
+require an `X-API-Key` header matching the configured key.
 
-```bash
-kh-setup      # Clone + build KernelHarbor binaries
-kh-status     # Print service status and alert summary
-kh-dashboard  # Start dashboard on :8181
-```
+## Data Persistence
+
+Alerts are indexed to Elasticsearch (`kb-alerts` index) on creation. On startup, the
+analysis service reloads alerts from the last 72 hours via `LoadAlerts()`. The in-memory
+`AlertStore` caps at 10,000 entries (trims to 5,000 when exceeded).
+
+## Reliability
+
+- **Auto-restart**: Crashed subprocesses (Falco, falcosidekick, signer, analysis) are
+  automatically restarted with exponential backoff
+- **Retry queue**: Failed event POSTs to analysis are retried up to 5 times with 1s backoff
+- **Graceful degradation**: `install.sh` skips optional components (Falco, falcosidekick)
+  when sudo is unavailable instead of failing
 
 ## Dashboard
 
-Start the dashboard and open http://localhost:8181:
-
 ```bash
-kh-dashboard
+./cli/dashboard.mjs
 ```
 
-The dashboard shows:
+Open http://localhost:8181. The dashboard shows:
+
 - **24h stats**: total alerts, malicious, suspicious, confirmed, false positives
-- **Alert list**: filter by verdict, time range, limit — with confirm/false-positive buttons
+- **Severity filter pills**: All / Malicious / Suspicious / Benign
+- **Timeline / Cards view toggle**
+- **Alert list**: with confirm / false-positive feedback buttons
 - **Auto-refresh**: every 15 seconds
 
 ## Feedback Loop
 
-Every alert has Confirm / False Positive buttons. Confirmed alerts become labeled incidents
-in the RAG incident store, improving future LLM analysis via similarity search.
+Confirmed alerts become labeled incidents in the RAG incident store, improving future
+LLM analysis via similarity search.
 
 ```mermaid
 sequenceDiagram
@@ -193,36 +237,58 @@ sequenceDiagram
     A-->>D: { status: ok }
 ```
 
-## Development
+## Tests
 
 ```bash
-# Plugin entry
-plugin.mjs
+# E2E tests (49/49): analysis API, dashboard, plugin structure
+node test/e2e.mjs
 
-# CLI tools
-cli/setup.mjs
-cli/status.mjs
-cli/dashboard.mjs
+# Smoke tests (8/8): Falco webhook → analysis pipeline
+node test/smoke.mjs
 
-# Dashboard SPA
-dashboard/index.html
-dashboard/app.js
-dashboard/style.css
+# HMAC tests (8/8): signer → webhook verification, reject invalid signatures
+node test/e2e-hmac.mjs
 
-# Detection rules (Falco-compatible)
-rules/kernelharbor-rules.yaml
+# Go unit tests
+cd ../cmd/analysis && go test -count=1 -timeout 120s ./...
+```
 
-# OpenClaw skill definition
-skill/SECURE.SKILL.md
+## File Structure
+
+```
+kernelharbor-openclaw/
+├── plugin.mjs              # Plugin entry: subprocess orchestration, webhook, HMAC verification
+├── signer.mjs              # HMAC-SHA256 signing proxy
+├── openclaw.plugin.json    # Plugin manifest + config schema
+├── install.sh              # One-liner install script
+├── docker-compose.yml      # Compose: ES, analysis, Falco, falcosidekick, Ollama
+├── package.json
+├── bin/                    # Compiled analysis binary (built by setup.mjs)
+├── cli/
+│   ├── setup.mjs           # Clone + build KernelHarbor binaries
+│   ├── status.mjs          # Print service status and alert summary
+│   └── dashboard.mjs       # Start dashboard on :8181
+├── dashboard/
+│   ├── index.html
+│   ├── app.js
+│   └── style.css
+├── rules/
+│   └── kernelharbor-rules.yaml  # Falco detection rules
+├── test/
+│   ├── e2e.mjs             # Full E2E test suite
+│   ├── smoke.mjs           # Pipeline smoke test
+│   └── e2e-hmac.mjs        # HMAC pipeline test
+└── skill/
+    └── SECURE.SKILL.md     # OpenClaw skill definition
 ```
 
 ## Requirements
 
-- Linux kernel 5.4+ (eBPF)
-- OpenClaw Gateway >= 2026.3.24-beta.2
+- Node.js 22+
 - Go 1.25+ (for building from source)
-- clang + llvm + libbpf-dev (for eBPF)
-- root/sudo for agent
+- Falco + falcosidekick (for event collection; optional in Docker Compose)
+- Elasticsearch 8.x (for alert persistence; optional, falls back to in-memory)
+- Ollama (for LLM analysis; optional, `LLM_BACKEND=none` by default)
 
 ## License
 

@@ -1,14 +1,14 @@
 # KernelHarbor
 
-Linux kernel security monitoring — **Falco** + heuristic detection + optional LLM-powered analysis.
+Linux kernel security monitoring: **Falco** + heuristic detection + optional LLM-powered analysis.
 
 **Three-tier architecture:** Heuristic (Tier 1) → LLM analysis (Tier 2) → Periodic summaries (Tier 3)
 
 **Credits:** [Kien Do](https://github.com/kienmarkdo), [Francois Coleongco](https://github.com/fr4nsyz), [John Tyler](https://github.com/john00003), [Mehar Klair](https://github.com/meharklair)
 
 > KernelHarbor originally shipped a custom eBPF agent for kernel event collection. The default
-> pipeline now uses **Falco + falcosidekick** for event collection — more robust, no custom
-> eBPF compilation needed. The original custom eBPF agents (`cmd/agent/` and friends) are
+> pipeline now uses **Falco + falcosidekick** for event collection, which is more robust and
+> requires no custom eBPF compilation. The original custom eBPF agents (`cmd/agent/` and friends) are
 > preserved in the repo and can still be built via `make agent` for those who prefer them.
 
 ## Architecture
@@ -19,18 +19,20 @@ Linux kernel security monitoring — **Falco** + heuristic detection + optional 
 graph TB
     subgraph "Event Source"
         F1[Falco - eBPF] -->|http_output| FS[falcosidekick]
-        FS -->|webhook| PH[Plugin Webhook]
+        FS -->|webhook| SG[HMAC Signer :28079]
+        SG -->|signed + X-KH-Signature-256| WH[Webhook :28080]
+        WH -->|verify HMAC| CNV[Convert to Event]
     end
 
-    subgraph "Tier 1 — Heuristic (real-time)"
-        PH -->|POST /ingest| H1[Regex Pattern Matcher]
+    subgraph "Tier 1: Heuristic (real-time)"
+        CNV -->|POST /ingest| H1[Regex Pattern Matcher]
         H1 -->|match| H2[Action: KILL_PID / BLOCK_IP]
         H1 -->|no match| H3[Submit to Batch Processor]
     end
 
-    subgraph "Tier 2 — LLM (30s-5m delay)"
+    subgraph "Tier 2: LLM (30s-5m delay)"
         H3 -->|batch| IS[Interestingness Scorer]
-        IS -->|score < threshold| D1[Skip — no LLM call]
+        IS -->|score < threshold| D1[Skip: no LLM call]
         IS -->|score >= threshold| EM[Embeddings]
         EM --> VS[Vector Search: similar incidents]
         VS --> LLM[LLM Backend]
@@ -39,7 +41,12 @@ graph TB
         FB -->|confirmed| RAG[Incident Store for future RAG]
     end
 
-    subgraph "Tier 3 — Periodic Summary"
+    subgraph "Persistence"
+        AL --> ES[Elasticsearch kb-alerts index]
+        ES -->|reload on startup| AL
+    end
+
+    subgraph "Tier 3: Periodic Summary"
         TS[Timer Trigger] --> SUM[Summarize recent alerts]
         SUM -->|dashboard| UI
     end
@@ -65,9 +72,9 @@ graph LR
 
 | Tier | Trigger | Latency | Actions Produced |
 |------|---------|---------|-----------------|
-| 1 — Heuristic | Regex match | Same HTTP response | `KILL_PID`, `BLOCK_IP` |
-| 2 — LLM | Interestingness >= threshold | 30s-5m | Alerts only |
-| 3 — Periodic Summary | Timer (configurable) | Hours | Dashboard summaries |
+| 1: Heuristic | Regex match | Same HTTP response | `KILL_PID`, `BLOCK_IP` |
+| 2: LLM | Interestingness >= threshold | 30s-5m | Alerts only |
+| 3: Periodic Summary | Timer (configurable) | Hours | Dashboard summaries |
 
 ### Event Flow
 
@@ -75,23 +82,31 @@ graph LR
 sequenceDiagram
     participant F as Falco (eBPF)
     participant FS2 as falcosidekick
-    participant K as Plugin Webhook
+    participant SG as HMAC Signer
+    participant WH as Webhook
     participant S as Analysis Server
     participant ES as Elasticsearch
     participant LLM as LLM Backend
 
     F->>FS2: http_output (Falco JSON)
-    FS2->>K: webhook
-    K->>K: Convert to Event format
-    K->>S: POST /ingest
+    FS2->>SG: webhook POST
+    SG->>SG: HMAC-SHA256(body, secret)
+    SG->>WH: POST + X-KH-Signature-256
+    WH->>WH: Verify HMAC (401 if invalid)
+    WH->>WH: Convert to Event format
+    WH->>S: POST /ingest
     S->>S: Regex heuristic check
-    S->>ES: Index event
+    opt KH_API_KEY set
+        S->>S: Verify X-API-Key header
+    end
+    S->>ES: Index alert to kb-alerts
     S->>S: Batch accumulator
     S->>S: Interestingness score
     alt score >= threshold
         S->>LLM: Analyze batch
         LLM-->>S: Verdict + evidence
         S->>S: Store alert
+        S->>ES: Index LLM alert
     end
 ```
 
@@ -100,11 +115,15 @@ sequenceDiagram
 ### Prerequisites
 
 ```bash
-# Falco + falcosidekick
+# Go 1.25+ for building from source
+# Node.js 22+ for the plugin / dashboard
+# See: https://go.dev/dl/
+
+# Falco + falcosidekick (for event collection)
 # See: https://falco.org/docs/install/
 # See: https://github.com/falcosecurity/falcosidekick
 
-# Optional: Elasticsearch for event persistence
+# Optional: Elasticsearch for alert persistence
 docker run -d --name elasticsearch -p 9200:9200 \
   -e "discovery.type=single-node" \
   -e "xpack.security.enabled=false" \
@@ -116,7 +135,17 @@ ollama pull nomic-embed-text
 ollama pull qwen2.5:7b
 ```
 
-### Build
+### Install (recommended)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fr4nsyz/KernelHarbor/main/kernelharbor-openclaw/install.sh | bash
+
+cd ~/kernelharbor/kernelharbor-openclaw
+./cli/status.mjs       # check status
+./cli/dashboard.mjs    # open browser dashboard
+```
+
+### Build (manual)
 
 ```bash
 make            # Build analysis service
@@ -132,7 +161,7 @@ make clean      # Remove binaries + generated files
 cd cmd/analysis && ./analysis
 
 # Terminal 2: Falco + falcosidekick (requires sudo for Falco)
-sudo falco -r rules/kernelharbor-rules.yaml \
+sudo falco -r kernelharbor-openclaw/rules/kernelharbor-rules.yaml \
   -o json_output=true \
   -o http_output.enabled=true \
   -o http_output.url=http://localhost:2801/
@@ -155,8 +184,9 @@ LLM_BACKEND=openai OPENAI_API_KEY=sk-... cd cmd/analysis && ./analysis
 
 | Component | Directory | Description |
 |-----------|-----------|-------------|
-| Analysis | `cmd/analysis/` | Event analysis pipeline — heuristic + optional LLM |
+| Analysis | `cmd/analysis/` | Event analysis pipeline: heuristic + optional LLM |
 | OpenClaw Plugin | `kernelharbor-openclaw/` | Orchestrates Falco + falcosidekick + analysis |
+| HMAC Signer | `kernelharbor-openclaw/signer.mjs` | HMAC-SHA256 signing proxy for pipeline auth |
 | Falco Rules | `kernelharbor-openclaw/rules/` | Detection rules for Falco |
 | Legacy Agent | `cmd/agent/` | Original custom eBPF tracer (optional, not needed for Falco) |
 
@@ -169,21 +199,24 @@ LLM_BACKEND=openai OPENAI_API_KEY=sk-... cd cmd/analysis && ./analysis
 | `incidents` | `cmd/analysis/internal/incidents/` | Labeled incident store with cosine similarity search |
 | Alerts | `cmd/analysis/alert.go` | Alert storage with feedback mechanism |
 | Processor | `cmd/analysis/processor.go` | Batch accumulator, interestingness scorer, LLM pipeline |
+| Elasticsearch | `cmd/analysis/elastic.go` | ES client, index mgmt, alert persistence & reload |
 
 ## API Endpoints
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Health check |
-| `/ready` | GET | Readiness check (Elasticsearch, LLM status) |
-| `/ingest` | POST | Ingest events (single or array) |
-| `/ingest/batch` | POST | Ingest batched events |
-| `/analyze` | POST | On-demand LLM analysis of a query string |
-| `/actions/:hostname` | GET | Fetch pending heuristic actions for a host |
-| `/api/alerts` | GET | List alerts (query: `since`, `min_verdict`, `limit`) |
-| `/api/alerts/stats` | GET | Alert statistics (24h count, verdict breakdown, feedback) |
-| `/api/alerts/:id/feedback` | POST | Submit feedback (`confirmed` or `false_positive`) |
-| `/api/incidents` | GET | List labeled incidents |
+| Endpoint | Method | Description | Auth |
+|----------|--------|-------------|------|
+| `/health` | GET | Health check | No |
+| `/ready` | GET | Readiness check (Elasticsearch, LLM status) | No |
+| `/ingest` | POST | Ingest events (single or array) | X-API-Key |
+| `/ingest/batch` | POST | Ingest batched events | X-API-Key |
+| `/analyze` | POST | On-demand LLM analysis of a query string | X-API-Key |
+| `/actions/:hostname` | GET | Fetch pending heuristic actions for a host | X-API-Key |
+| `/api/alerts` | GET | List alerts (query: `since`, `min_verdict`, `limit`) | X-API-Key |
+| `/api/alerts/stats` | GET | Alert statistics (24h count, verdict breakdown, feedback) | X-API-Key |
+| `/api/alerts/:id/feedback` | POST | Submit feedback (`confirmed` or `false_positive`) | X-API-Key |
+| `/api/incidents` | GET | List labeled incidents | X-API-Key |
+
+Auth is enforced when `KH_API_KEY` is set. Empty key = no auth (backward compatible).
 
 ### Alert Feedback
 
@@ -195,9 +228,34 @@ curl -X POST http://localhost:8080/api/alerts/<alert-id>/feedback \
 
 Confirmed alerts become labeled incidents in the RAG store, improving future analysis.
 
+## Security
+
+### API Key Auth
+
+Set `KH_API_KEY` on the analysis service. Clients must pass `X-API-Key` header on all
+endpoints except `/health` and `/ready`.
+
+```bash
+export KH_API_KEY="your-secret-key"
+```
+
+### HMAC-SHA256 Pipeline Signing
+
+Set `KH_SIGNING_SECRET` on the plugin. When enabled, the pipeline becomes:
+
+```
+Falco → falcosidekick → signer:28079 (HMAC-SHA256) → webhook:28080 (verify) → analysis
+```
+
+Requests without a valid `X-KH-Signature-256` header are rejected with 401.
+
+```bash
+export KH_SIGNING_SECRET="your-shared-secret"
+```
+
 ## Interestingness Gating
 
-The interestingness scorer gates LLM analysis — only batches scoring above `LLM_THRESHOLD` (default 0.6) trigger LLM calls. This eliminates ~95% of unnecessary LLM invocations.
+The interestingness scorer gates LLM analysis. Only batches scoring above `LLM_THRESHOLD` (default 0.6) trigger LLM calls. This eliminates ~95% of unnecessary LLM invocations.
 
 Scoring factors:
 - Exec + network events in the same batch (+0.3)
@@ -222,14 +280,17 @@ The `null` backend (default) means zero external dependencies in production. Set
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | Ollama server address |
 | `OLLAMA_MODEL` | `qwen2.5:7b` | Ollama analysis model |
 | `ES_ADDRESSES` | `http://localhost:9200` | Elasticsearch addresses |
-| `ES_INDEX` | `kb-events` | Elasticsearch events index |
-| `OPENAI_API_KEY` | — | OpenAI API key |
-| `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
-| `ANTHROPIC_API_KEY` | — | Anthropic API key |
-| `ANTHROPIC_MODEL` | `claude-3-haiku-20240307` | Anthropic model |
+| `KH_API_KEY` | `` | API key for HTTP auth (empty = disabled) |
 | `PROTOCOL` | `both` | Server protocol: `http`, `grpc`, or `both` |
 | `GRPC_ADDRESS` | `:9090` | gRPC server address |
 | `HTTP_ADDRESS` | `:8080` | HTTP server address |
+
+### Plugin / Pipeline
+
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `KH_SIGNING_SECRET` | `` | HMAC secret for Falco → analysis pipeline (empty = disabled) |
+| `KH_DASHBOARD_PORT` | `8181` | Dashboard server port |
 
 ## Project Structure
 
@@ -243,12 +304,12 @@ KernelHarbor/
 │   ├── openat-tracer/         # Legacy standalone tracer (optional)
 │   └── analysis/              # Analysis pipeline
 │       ├── main.go            # Entry point, config, server startup
-│       ├── routes.go          # HTTP route handlers
+│       ├── routes.go          # HTTP route handlers + auth middleware
 │       ├── processor.go       # Batch processor + LLM pipeline
 │       ├── alert.go           # Alert store with feedback
 │       ├── event.go           # Event types + behavior summaries
 │       ├── grpc.go            # gRPC handlers + heuristic patterns
-│       ├── elastic.go         # Elasticsearch client
+│       ├── elastic.go         # Elasticsearch client + alert persistence
 │       ├── state.go           # Package-level state
 │       ├── bench_test.go      # Benchmarks + accuracy tests
 │       ├── eval_test.go       # Evaluation framework
@@ -258,6 +319,13 @@ KernelHarbor/
 │           └── incidents/        # Labeled incident store
 ├── proto/                     # Protocol Buffer definitions
 ├── kernelharbor-openclaw/     # OpenClaw plugin (Falco-based event collection)
+│   ├── plugin.mjs             # Plugin entry: manages all subprocesses
+│   ├── signer.mjs             # HMAC-SHA256 signing proxy
+│   ├── cli/                   # CLI tools (setup, status, dashboard)
+│   ├── dashboard/             # SPA dashboard (HTML + JS + CSS)
+│   ├── rules/                 # Falco detection rules
+│   ├── test/                  # E2E + smoke + HMAC tests
+│   └── install.sh             # One-liner install script
 ├── deploy/                    # Docker Compose + Dockerfiles
 ├── scripts/                   # Utility scripts
 ├── Makefile
@@ -270,11 +338,17 @@ KernelHarbor/
 # All unit tests
 go test ./cmd/analysis/...
 
+# OpenClaw E2E tests (analysis API, dashboard, plugin structure)
+cd kernelharbor-openclaw && node test/e2e.mjs
+
+# Pipeline smoke test (Falco webhook → analysis)
+cd kernelharbor-openclaw && node test/smoke.mjs
+
+# HMAC pipeline test (signer → webhook verification)
+cd kernelharbor-openclaw && node test/e2e-hmac.mjs
+
 # Evaluation tests (no external services needed)
 go test -run 'TestEval' ./cmd/analysis/...
-
-# Benchmarks
-./scripts/bench.sh
 
 # Full test suite (requires Elasticsearch + Ollama)
 ES_ADDRESSES=http://localhost:9200 OLLAMA_ADDRESS=http://localhost:11434 \
@@ -283,19 +357,22 @@ ES_ADDRESSES=http://localhost:9200 OLLAMA_ADDRESS=http://localhost:11434 \
 
 ## Deployment
 
-### Docker (AI Mode)
+### Docker Compose
 
 ```bash
-cd deploy
-docker compose up -d
-```
+cd kernelharbor-openclaw
+docker compose up -d elasticsearch analysis
 
-This starts Elasticsearch, Ollama, and the analysis service. For event collection, run
-Falco natively (requires eBPF + root) or use the OpenClaw plugin.
+# With Falco + falcosidekick:
+docker compose --profile falco up -d
+
+# With LLM (Ollama):
+docker compose --profile llm up -d
+```
 
 ### Heuristic-Only (Production)
 
-No external dependencies — just the analysis binary:
+No external dependencies, just the analysis binary:
 
 ```bash
 cd cmd/analysis && go build -o analysis . && ./analysis

@@ -4,6 +4,7 @@ import http from "node:http";
 import { existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, "..");
@@ -28,14 +29,27 @@ async function main() {
   console.log("KernelHarbor — Status");
   console.log("=====================");
 
-  // Check binaries
   const binAnalysis = join(root, "bin", "analysis");
-  const binAgent = join(root, "bin", "agent");
   console.log(`\nBinaries:`);
   console.log(`  Analysis:  ${existsSync(binAnalysis) ? "✓" : "✗"} ${binAnalysis}`);
-  console.log(`  Agent:     ${existsSync(binAgent) ? "✓" : "✗"} ${binAgent}`);
 
-  // Check HTTP API
+  try {
+    execSync("which falco", { stdio: "ignore" });
+    console.log("  Falco:     ✓ (found on PATH)");
+  } catch {
+    console.log("  Falco:     ✗ (not found)");
+  }
+
+  try {
+    execSync("which falcosidekick", { stdio: "ignore" });
+    console.log("  Sidekick:  ✓ (found on PATH)");
+  } catch {
+    console.log("  Sidekick:  ✗ (not found)");
+  }
+
+  const rulesPath = join(root, "rules", "kernelharbor-rules.yaml");
+  console.log(`  Rules:     ${existsSync(rulesPath) ? "✓" : "✗"} ${rulesPath}`);
+
   const httpHealth = await httpGet("http://localhost:8080/health");
   if (httpHealth) {
     console.log(`\nAnalysis HTTP API: ✓ (status: ${httpHealth.status})`);
@@ -43,14 +57,12 @@ async function main() {
     console.log(`\nAnalysis HTTP API: ✗ (not responding on :8080)`);
   }
 
-  // Check gRPC health
   const ready = await httpGet("http://localhost:8080/ready");
   if (ready) {
     console.log(`  Elasticsearch: ${ready.elasticsearch ? "✓" : "✗"}`);
     console.log(`  LLM:           ${ready.llm ? "✓ (" + (ready.llmModel || "configured") + ")" : "✗ (none)"}`);
   }
 
-  // Check alerts
   const alerts = await httpGet("http://localhost:8080/api/alerts?since=24h&min_verdict=suspicious&limit=5");
   if (alerts && alerts.alerts) {
     console.log(`\nRecent alerts: ${alerts.alerts.length}`);
@@ -59,7 +71,6 @@ async function main() {
     }
   }
 
-  // Check stats
   const stats = await httpGet("http://localhost:8080/api/alerts/stats");
   if (stats) {
     console.log(`\nStats (24h):`);

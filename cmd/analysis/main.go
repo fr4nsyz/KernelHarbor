@@ -115,7 +115,7 @@ func getDefaultConfig() Config {
 		}{
 			Workers:      3,
 			BatchSize:    100,
-			BatchTimeout: 30 * time.Second,
+			BatchTimeout: 5 * time.Second,
 		},
 	}
 }
@@ -187,9 +187,9 @@ func main() {
 
 	// Initialize state
 	actionStore = NewActionStore()
-	alertStore := NewAlertStore()
+	alertStore = NewAlertStore()
 	interestingnessScorer := interestingness.New()
-	incidentStore := incidents.NewStore()
+	incidentStore = incidents.NewStore()
 
 	// Connect to Elasticsearch (optional)
 	if len(cfg.Elasticsearch.Addresses) > 0 {
@@ -203,8 +203,29 @@ func main() {
 			log.Printf("Warning: Elasticsearch unavailable: %v (continuing without ES)", err)
 		} else {
 			esClientInstance = client
+			if err := esClientInstance.ensureAlertsIndex(ctx); err != nil {
+				log.Printf("Warning: couldn't create alerts index: %v", err)
+			} else {
+				alerts, err := esClientInstance.LoadAlerts(ctx, time.Now().Add(-72*time.Hour))
+				if err != nil {
+					log.Printf("Warning: couldn't load alerts from ES: %v", err)
+				} else {
+					for i := range alerts {
+						alertStore.Add(alerts[i])
+					}
+					log.Printf("Loaded %d alerts from Elasticsearch", len(alerts))
+				}
+			}
 			log.Printf("Connected to Elasticsearch at %v", cfg.Elasticsearch.Addresses)
 		}
+	}
+
+	// API key for HTTP auth
+	apiKey = os.Getenv("KH_API_KEY")
+	if apiKey != "" {
+		log.Printf("API key authentication enabled")
+	} else {
+		log.Printf("Warning: KH_API_KEY not set — HTTP API is unprotected")
 	}
 
 	// Initialize LLM backend
@@ -266,6 +287,7 @@ func main() {
 	router := gin.Default()
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
+	router.Use(authMiddleware())
 
 	// Register routes
 	registerHealthRoutes(router)

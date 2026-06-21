@@ -29,38 +29,42 @@ function serveFile(res, filePath) {
   res.end(readFileSync(filePath));
 }
 
-async function fetchJSON(url) {
-  return new Promise((resolve) => {
-    http.get(url, (res) => {
-      let data = "";
-      res.on("data", (c) => (data += c));
-      res.on("end", () => {
-        try {
-          resolve(JSON.parse(data));
-        } catch {
-          resolve(null);
-        }
-      });
-    }).on("error", () => resolve(null));
-  });
-}
-
 const analysisAddr = process.env.KH_ANALYSIS_HTTP_ADDR || "localhost:8080";
 
-const server = http.createServer(async (req, res) => {
+const PROXY_PREFIXES = ["/api/", "/health", "/ready"];
+
+function shouldProxy(pathname) {
+  return PROXY_PREFIXES.some((p) => pathname === p || pathname.startsWith(p));
+}
+
+const server = http.createServer((req, res) => {
   const url = new URL(req.url, `http://${req.headers.host}`);
 
-  // API proxy to analysis service
-  if (url.pathname.startsWith("/api/")) {
+  // API proxy to analysis service (supports any method + body)
+  if (shouldProxy(url.pathname)) {
     const targetURL = `http://${analysisAddr}${url.pathname}${url.search}`;
-    const data = await fetchJSON(targetURL);
-    if (data) {
-      res.writeHead(200, { "Content-Type": "application/json" });
-      res.end(JSON.stringify(data));
-    } else {
+    const proxyReq = http.request(
+      targetURL,
+      {
+        method: req.method,
+        headers: { ...req.headers, host: analysisAddr.split(":")[0] },
+      },
+      (proxyRes) => {
+        let body = "";
+        proxyRes.on("data", (c) => (body += c));
+        proxyRes.on("end", () => {
+          res.writeHead(proxyRes.statusCode, {
+            "Content-Type": proxyRes.headers["content-type"] || "application/json",
+          });
+          res.end(body);
+        });
+      }
+    );
+    proxyReq.on("error", () => {
       res.writeHead(502);
       res.end(JSON.stringify({ error: "Analysis service unavailable" }));
-    }
+    });
+    req.pipe(proxyReq);
     return;
   }
 

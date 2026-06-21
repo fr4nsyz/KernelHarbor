@@ -25,15 +25,22 @@
   </section>
 
   <section class="panel">
-    <h2>Alerts</h2>
+    <div class="alerts-header">
+      <h2>Alerts</h2>
+      <div class="alerts-controls">
+        <button id="view-toggle" data-view="cards" class="btn btn-sm">Timeline</button>
+        <button id="refresh-btn" class="btn btn-sm">Refresh</button>
+      </div>
+    </div>
+
+    <div class="severity-filters">
+      <button class="severity-pill active" data-severity="all">All</button>
+      <button class="severity-pill" data-severity="malicious">Malicious</button>
+      <button class="severity-pill" data-severity="suspicious">Suspicious</button>
+      <button class="severity-pill" data-severity="benign">Benign</button>
+    </div>
+
     <div class="alert-filters">
-      <label>Min verdict:
-        <select id="filter-verdict">
-          <option value="suspicious">suspicious</option>
-          <option value="malicious">malicious</option>
-          <option value="benign">benign</option>
-        </select>
-      </label>
       <label>Since:
         <select id="filter-since">
           <option value="1h">1 hour</option>
@@ -45,8 +52,8 @@
       <label>Limit:
         <input type="number" id="filter-limit" value="50" min="1" max="500">
       </label>
-      <button id="refresh-btn" class="btn">Refresh</button>
     </div>
+
     <div id="alert-list" class="alert-list">
       <div class="loading">Loading alerts...</div>
     </div>

@@ -21,7 +21,7 @@ async function apiPost(path, body) {
 }
 
 function renderHealth() {
-  apiFetch("/health").then(data => {
+  apiFetch("/health").then((data) => {
     const el = document.getElementById("health-status");
     if (data && data.status === "ok") {
       el.textContent = "connected";
@@ -34,9 +34,9 @@ function renderHealth() {
 }
 
 function renderStats() {
-  apiFetch("/api/alerts/stats").then(data => {
+  apiFetch("/api/alerts/stats").then((data) => {
     if (!data) {
-      document.querySelectorAll(".stat-value").forEach(el => el.textContent = "-");
+      document.querySelectorAll(".stat-value").forEach((el) => (el.textContent = "-"));
       return;
     }
     document.getElementById("stat-total").textContent = data.alerts_24h ?? "-";
@@ -47,15 +47,51 @@ function renderStats() {
   });
 }
 
+function getSeverityFilter() {
+  const raw = document.querySelector(".severity-pill.active")?.dataset?.severity || "suspicious";
+  return raw === "all" ? "benign" : raw;
+}
+
+function setSeverityFilter(severity) {
+  document.querySelectorAll(".severity-pill").forEach((el) => {
+    el.classList.toggle("active", el.dataset.severity === severity);
+  });
+}
+
+function groupByTimeBucket(alerts) {
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const yesterday = new Date(today.getTime() - 86400000);
+  const weekAgo = new Date(today.getTime() - 7 * 86400000);
+  const buckets = { today: [], yesterday: [], week: [], older: [] };
+  for (const a of alerts) {
+    const t = a.timestamp ? new Date(a.timestamp) : new Date();
+    if (t >= today) buckets.today.push(a);
+    else if (t >= yesterday) buckets.yesterday.push(a);
+    else if (t >= weekAgo) buckets.week.push(a);
+    else buckets.older.push(a);
+  }
+  const labels = { today: "Today", yesterday: "Yesterday", week: "This Week", older: "Older" };
+  const icons = { today: "🟢", yesterday: "🟡", week: "🟠", older: "🔴" };
+  const result = [];
+  for (const key of ["today", "yesterday", "week", "older"]) {
+    if (buckets[key].length > 0) {
+      result.push({ label: labels[key], icon: icons[key], alerts: buckets[key] });
+    }
+  }
+  return result;
+}
+
 function renderAlerts() {
-  const verdict = document.getElementById("filter-verdict").value;
+  const severity = getSeverityFilter();
   const since = document.getElementById("filter-since").value;
   const limit = document.getElementById("filter-limit").value;
   const listEl = document.getElementById("alert-list");
+  const viewToggle = document.getElementById("view-toggle");
 
   listEl.innerHTML = '<div class="loading">Loading alerts...</div>';
 
-  apiFetch(`/api/alerts?since=${since}&min_verdict=${verdict}&limit=${limit}`).then(data => {
+  apiFetch(`/api/alerts?since=${since}&min_verdict=${severity}&limit=${limit}`).then((data) => {
     if (!data) {
       listEl.innerHTML = '<div class="error">Failed to fetch alerts</div>';
       return;
@@ -67,9 +103,24 @@ function renderAlerts() {
       return;
     }
 
-    listEl.innerHTML = alerts.map(a => renderAlertCard(a)).join("");
+    const isTimeline = viewToggle?.dataset?.view === "timeline";
 
-    alerts.forEach(a => {
+    if (isTimeline) {
+      const buckets = groupByTimeBucket(alerts);
+      listEl.innerHTML = buckets
+        .map(
+          (b) => `
+        <div class="timeline-group">
+          <div class="timeline-header">${b.icon} ${b.label} (${b.alerts.length})</div>
+          ${b.alerts.map((a) => renderAlertCard(a, true)).join("")}
+        </div>`
+        )
+        .join("");
+    } else {
+      listEl.innerHTML = alerts.map((a) => renderAlertCard(a, false)).join("");
+    }
+
+    alerts.forEach((a) => {
       const confirmBtn = document.getElementById(`confirm-${a.id}`);
       const fpBtn = document.getElementById(`fp-${a.id}`);
       if (confirmBtn) confirmBtn.addEventListener("click", () => sendFeedback(a.id, "confirmed"));
@@ -78,13 +129,15 @@ function renderAlerts() {
   });
 }
 
-function renderAlertCard(a) {
+function renderAlertCard(a, compact) {
   const ts = a.timestamp ? new Date(a.timestamp).toLocaleString() : "";
   const confidence = a.confidence != null ? `confidence: ${(a.confidence * 100).toFixed(0)}%` : "";
   const source = a.source || "";
   const host = a["host.name"] || "";
   const model = a["model.used"] || "";
   const evidence = Array.isArray(a.evidence) ? a.evidence : [];
+  const falcoRule = a.metadata?.falco_rule || "";
+  const falcoPriority = a.metadata?.falco_priority || "";
 
   let feedbackHtml = "";
   if (a.feedback) {
@@ -97,9 +150,21 @@ function renderAlertCard(a) {
       </div>`;
   }
 
-  const evidenceHtml = evidence.length > 0
-    ? `<div class="alert-meta"><strong>Evidence:</strong> ${evidence.join("; ")}</div>`
-    : "";
+  const evidenceHtml =
+    evidence.length > 0
+      ? `<div class="alert-meta"><strong>Evidence:</strong> ${evidence.join("; ")}</div>`
+      : "";
+
+  const detailsHtml = compact
+    ? ""
+    : `<div class="alert-meta">
+      ${host ? `<span>host: ${host}</span>` : ""}
+      ${source ? `<span>source: ${source}</span>` : ""}
+      ${source === "llm" && model ? `<span>model: ${model}</span>` : ""}
+      ${confidence ? `<span>${confidence}</span>` : ""}
+      ${falcoRule ? `<span>rule: ${falcoRule}</span>` : ""}
+      ${falcoPriority ? `<span>priority: ${falcoPriority}</span>` : ""}
+    </div>`;
 
   return `
     <div class="alert-card">
@@ -109,12 +174,7 @@ function renderAlertCard(a) {
       </div>
       <div class="alert-summary">${a.summary || "no summary"}</div>
       ${evidenceHtml}
-      <div class="alert-meta">
-        ${host ? `<span>host: ${host}</span>` : ""}
-        ${source ? `<span>source: ${source}</span>` : ""}
-        ${source === "llm" && model ? `<span>model: ${model}</span>` : ""}
-        ${confidence ? `<span>${confidence}</span>` : ""}
-      </div>
+      ${detailsHtml}
       <div>${feedbackHtml}</div>
     </div>`;
 }
@@ -132,9 +192,23 @@ document.addEventListener("DOMContentLoaded", () => {
   renderStats();
   renderAlerts();
 
+  document.querySelectorAll(".severity-pill").forEach((el) => {
+    el.addEventListener("click", () => {
+      setSeverityFilter(el.dataset.severity);
+      renderAlerts();
+    });
+  });
+
   document.getElementById("refresh-btn").addEventListener("click", () => {
     renderAlerts();
     renderStats();
+  });
+
+  document.getElementById("view-toggle").addEventListener("click", () => {
+    const btn = document.getElementById("view-toggle");
+    btn.dataset.view = btn.dataset.view === "timeline" ? "cards" : "timeline";
+    btn.textContent = btn.dataset.view === "timeline" ? "Cards" : "Timeline";
+    renderAlerts();
   });
 
   setInterval(() => {

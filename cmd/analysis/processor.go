@@ -352,6 +352,11 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 			Source:     "llm",
 		}
 		bp.alertStore.Add(alert)
+		if esClientInstance != nil {
+			if err := esClientInstance.IndexAlert(ctx, alert); err != nil {
+				log.Printf("Failed to index LLM alert to ES: %v", err)
+			}
+		}
 		log.Printf("Alert generated: %s (%s, %.2f)", alert.ID, alert.Verdict, alert.Confidence)
 
 		// If incident store available, store as unverified incident for future RAG

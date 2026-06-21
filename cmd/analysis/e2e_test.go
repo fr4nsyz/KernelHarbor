@@ -43,8 +43,8 @@ func setupE2EServer(t *testing.T, llmThreshold float64, batchTimeout time.Durati
 	gin.SetMode(gin.TestMode)
 
 	actionStore = NewActionStore()
-	alertStore := NewAlertStore()
-	incidentStore := incidents.NewStore()
+	alertStore = NewAlertStore()
+	incidentStore = incidents.NewStore()
 	scorer := interestingness.New()
 	nullBackend := &e2eLLMBackend{}
 

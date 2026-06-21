@@ -17,25 +17,35 @@ async function main() {
   console.log("KernelHarbor — Setup");
   console.log("====================");
 
-  // 1. Check prerequisites
   console.log("\n1. Checking prerequisites...");
+  let goOk = false;
   try {
     execSync("which go", { stdio: "ignore" });
     console.log("   ✓ Go installed");
+    goOk = true;
   } catch {
     console.log("   ✗ Go not found. Install Go 1.25+ from https://go.dev/dl/");
-    process.exit(1);
   }
 
   try {
-    execSync("which clang", { stdio: "ignore" });
-    console.log("   ✓ clang installed");
+    execSync("which falco", { stdio: "ignore" });
+    console.log("   ✓ Falco installed");
   } catch {
-    console.log("   ⚠ clang not found. KernelHarbor agent requires clang for eBPF.");
+    console.log("   ⚠ Falco not found. Install: https://falco.org/docs/install/");
   }
 
-  // 2. Clone/build KernelHarbor
-  console.log("\n2. Building KernelHarbor...");
+  try {
+    execSync("which falcosidekick", { stdio: "ignore" });
+    console.log("   ✓ falcosidekick installed");
+  } catch {
+    console.log("   ⚠ falcosidekick not found. Install: https://github.com/falcosecurity/falcosidekick");
+  }
+
+  if (!goOk) {
+    process.exit(1);
+  }
+
+  console.log("\n2. Building analysis service...");
   const harborDir = join(root, ".kernelharbor");
   if (!existsSync(harborDir)) {
     const repo = process.env.KH_REPO || "https://github.com/fr4nsyz/KernelHarbor.git";
@@ -45,18 +55,20 @@ async function main() {
     run(`git -C "${harborDir}" pull`, { cwd: harborDir });
   }
 
-  // 3. Build binaries
   const binDir = join(root, "bin");
   mkdirSync(binDir, { recursive: true });
-
   console.log("   Building analysis service...");
   run(`go build -o "${join(binDir, "analysis")}" .`, { cwd: join(harborDir, "cmd", "analysis") });
 
-  console.log("   Building agent...");
-  run(`go build -o "${join(binDir, "agent")}" .`, { cwd: join(harborDir, "cmd", "agent") });
+  console.log("\n3. Verifying Falco rules...");
+  const rulesPath = join(root, "rules", "kernelharbor-rules.yaml");
+  if (existsSync(rulesPath)) {
+    console.log(`   ✓ Falco rules found at ${rulesPath}`);
+  } else {
+    console.log(`   ✗ Falco rules not found at ${rulesPath}`);
+  }
 
-  // 4. Create config
-  console.log("\n3. Creating config...");
+  console.log("\n4. Creating config...");
   const configPath = join(root, ".env");
   if (!existsSync(configPath)) {
     writeFileSync(configPath, [
@@ -66,14 +78,21 @@ async function main() {
       '# OLLAMA_ADDRESS="http://localhost:11434"',
       '# LLM_THRESHOLD="0.6"',
       "",
-      "# gRPC address for analysis service",
+      "# Analysis service address (gRPC)",
       'GRPC_ADDRESS="localhost:9090"',
+      "",
+      "# Path to Falco rules file (default: rules/kernelharbor-rules.yaml)",
+      '# FALCO_RULES_PATH=""',
+      "",
+      "# Path to Falco config file (optional)",
+      '# FALCO_CONFIG_PATH=""',
       "",
     ].join("\n"));
     console.log(`   Created ${configPath}`);
   }
 
   console.log("\n✓ Setup complete!");
+  console.log("  Make sure Falco and falcosidekick are installed and on PATH.");
   console.log("  Run './cli/status.mjs' to check service status.");
   console.log("  Run './cli/dashboard.mjs' to start the dashboard.");
   console.log("  Or start the sidecar via OpenClaw Gateway.");

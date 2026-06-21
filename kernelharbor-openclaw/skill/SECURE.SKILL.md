@@ -2,12 +2,14 @@
 
 ## Description
 
-Kernel-level security monitoring powered by eBPF. Tracks process execution (execve), file
-operations (open/openat), and network connections (connect). Uses a three-tier detection
-pipeline: real-time heuristic rules ↔ delayed LLM analysis ↔ periodic summaries.
+Kernel-level security monitoring powered by **Falco** + **falcosidekick**. Falco captures
+process execution (execve), file operations (open/openat), and network connections (connect)
+using eBPF under the hood. Events flow through falcosidekick to the KernelHarbor analysis
+service, which runs a three-tier detection pipeline: real-time heuristic rules → delayed LLM
+analysis → periodic summaries.
 
-**Tier 1 — Heuristic (real-time):** Regex-based pattern matching against the same event stream.
-Produces KILL_PID and BLOCK_IP actions returned in-band via the Ingest RPC response.
+**Tier 1 — Heuristic (real-time):** Regex-based pattern matching against the event stream.
+Produces KILL_PID and BLOCK_IP actions returned in-band via the Ingest API response.
 Zero external dependencies, sub-millisecond latency.
 
 **Tier 2 — LLM (30s–5m delay):** Batched events scored by interestingness. Only batches above
@@ -20,8 +22,9 @@ for human review plus labeled incidents for future RAG retrieval.
 
 ### Prerequisites
 
-- Linux with kernel 5.4+ (for eBPF)
-- clang + llvm + libbpf-dev (for eBPF compilation)
+- Linux with kernel 5.4+ (for Falco's eBPF driver)
+- Falco installed (https://falco.org/docs/install/)
+- falcosidekick installed (https://github.com/falcosecurity/falcosidekick)
 - OpenClaw Gateway with API >= 2026.3.24-beta.2
 
 ### Installation
@@ -36,15 +39,17 @@ Or install from the OpenClaw marketplace.
 
 ### Starting
 
-The plugin auto-starts the KernelHarbor sidecar (agent + analysis) on gateway startup.
-Configure via plugin settings:
+The plugin auto-starts the KernelHarbor sidecar (analysis + Falco + falcosidekick)
+on gateway startup. Configure via plugin settings:
 
 ```json
 {
   "analysisAddr": "localhost:9090",
   "dashboardPort": 8181,
   "autoStart": true,
-  "binaryDir": ""
+  "falcoRulesPath": "rules/kernelharbor-rules.yaml",
+  "falcoSidekickPort": 2801,
+  "falcoWebhookPort": 28080
 }
 ```
 
@@ -114,14 +119,17 @@ graph TB
     end
 
     subgraph KernelHarbor Sidecar
-        AG[Agent - eBPF] -->|gRPC Ingest| AN[Analysis Service]
+        F[Falco - eBPF] -->|http_output| FS[falcosidekick]
+        FS -->|webhook| PH[Plugin Webhook :28080]
+        PH -->|convert + POST /ingest| AN[Analysis Service]
         AN -->|Tier 1: heuristic| AC[KILL_PID / BLOCK_IP]
         AN -->|Tier 2: LLM| AL[Alert Store]
         AL -->|feedback| IN[Incident Store]
         AN -->|Tier 3: periodic| SUM[Summary]
     end
 
-    P -->|start/stop| AG
+    P -->|start/stop| F
+    P -->|start/stop| FS
     P -->|start/stop| AN
     P -->|poll alerts| AL
     P -->|push alert| GW
@@ -131,7 +139,7 @@ graph TB
 ## Requirements
 
 - Linux kernel 5.4+
-- root/sudo access for eBPF
-- Go 1.25+ for building
-- clang + llvm + libbpf-dev
+- root/sudo access for Falco
+- Go 1.25+ for building analysis service
+- Falco + falcosidekick on PATH
 - OpenClaw Gateway >= 2026.3.24-beta.2

@@ -1,9 +1,8 @@
 services:
-  # KernelHarbor analysis service (heuristic + optional LLM)
   analysis:
     image: kernelharbor/analysis:latest
     build:
-      context: .
+      context: ..
       dockerfile: deploy/Dockerfile.analysis
     ports:
       - "9090:9090"
@@ -12,6 +11,7 @@ services:
       GRPC_ADDRESS: ":9090"
       HTTP_ADDRESS: ":8080"
       PROTOCOL: "both"
+      KH_API_KEY: "${KH_API_KEY:-}"
       ES_ADDRESSES: "${ES_ADDRESSES:-http://elasticsearch:9200}"
       LLM_BACKEND: "${KH_LLM_BACKEND:-none}"
       LLM_THRESHOLD: "${LLM_THRESHOLD:-0.6}"
@@ -24,7 +24,6 @@ services:
     networks:
       - kernelharbor
 
-  # Elasticsearch for event persistence
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.17.4
     environment:
@@ -44,7 +43,51 @@ services:
       - kernelharbor
     restart: unless-stopped
 
-  # Ollama for local LLM analysis (optional)
+  falco:
+    image: falcosecurity/falco:latest
+    profiles:
+      - falco
+    privileged: true
+    pid: host
+    volumes:
+      - ./rules/kernelharbor-rules.yaml:/etc/falco/rules.d/kernelharbor-rules.yaml:ro
+      - /proc:/host/proc:ro
+      - /boot:/host/boot:ro
+      - /lib/modules:/host/lib/modules:ro
+      - /usr:/host/usr:ro
+      - /etc:/host/etc:ro
+    command: >
+      falco -r /etc/falco/rules.d/kernelharbor-rules.yaml
+      -o json_output=true
+      -o json_include_output_property=false
+      -o http_output.enabled=true
+      -o http_output.url=http://falcosidekick:2801/
+    depends_on:
+      - falcosidekick
+    networks:
+      - kernelharbor
+    restart: unless-stopped
+
+  falcosidekick:
+    image: falcosecurity/falcosidekick:latest
+    profiles:
+      - falco
+    ports:
+      - "2801:2801"
+    environment:
+      LISTENPORT: "2801"
+      DEBUG: "${FALCOSIDEKICK_DEBUG:-true}"
+    # In Docker Compose, events flow: Falco → falcosidekick → logs.
+    # For the full pipeline (conversion + analysis), run the OpenClaw plugin
+    # alongside, which provides a HMAC signer on port 28079 and webhook receiver on port 28080.
+    # Configure falcosidekick to forward through the signer:
+    #   WEBHOOK_ADDRESS: "http://host.docker.internal:28079/falco/event"
+    # Also set KH_SIGNING_SECRET on the gateway/plugin side to match the signing key.
+    depends_on: []
+    networks:
+      - kernelharbor
+    restart: unless-stopped
+
   ollama:
     image: ollama/ollama:latest
     ports:

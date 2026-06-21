@@ -79,6 +79,7 @@ func (h *grpcHandler) Ingest(ctx context.Context, req *pb.IngestRequest) (*pb.In
 					Reason:     fmt.Sprintf("Heuristic match: %s", query),
 				}
 				actionStore.Add(event.HostName, action)
+				addHeuristicAlert(event)
 				pbActions = append(pbActions, &pb.Action{
 					Id:         action.ID,
 					ActionType: string(action.ActionType),

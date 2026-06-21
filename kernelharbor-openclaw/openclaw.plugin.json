@@ -1,7 +1,7 @@
 {
   "id": "kernelharbor",
   "name": "KernelHarbor",
-  "description": "Linux kernel security monitoring with eBPF, heuristic detection, and optional LLM analysis",
+  "description": "Linux kernel security monitoring with Falco, falcosidekick, heuristic detection, and optional LLM analysis",
   "activation": {
     "onStartup": true
   },
@@ -25,12 +25,37 @@
       "autoStart": {
         "type": "boolean",
         "default": true,
-        "description": "Auto-start the KernelHarbor sidecar on gateway startup"
+        "description": "Auto-start sidecar processes on gateway startup"
       },
-      "binaryDir": {
+      "falcoRulesPath": {
         "type": "string",
         "default": "",
-        "description": "Directory containing pre-built agent and analysis binaries (empty = use bundled)"
+        "description": "Path to Falco rules file (default: rules/kernelharbor-rules.yaml)"
+      },
+      "falcoConfigPath": {
+        "type": "string",
+        "default": "",
+        "description": "Path to Falco configuration file (optional)"
+      },
+      "falcoSidekickPort": {
+        "type": "number",
+        "default": 2801,
+        "description": "Port for falcosidekick to listen on for events from Falco"
+      },
+      "falcoWebhookPort": {
+        "type": "number",
+        "default": 28080,
+        "description": "Port for the plugin webhook receiver (receives from falcosidekick)"
+      },
+      "signerPort": {
+        "type": "number",
+        "default": 28079,
+        "description": "Port for the HMAC signing proxy (between falcosidekick and webhook)"
+      },
+      "signingSecret": {
+        "type": "string",
+        "default": "",
+        "description": "Shared secret for HMAC-SHA256 signing of Falco events (empty = disabled)"
       }
     },
     "additionalProperties": false

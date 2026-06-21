@@ -1,10 +1,15 @@
 # KernelHarbor
 
-Linux kernel security monitoring with eBPF, heuristic detection, and optional LLM-powered analysis.
+Linux kernel security monitoring — **Falco** + heuristic detection + optional LLM-powered analysis.
 
 **Three-tier architecture:** Heuristic (Tier 1) → LLM analysis (Tier 2) → Periodic summaries (Tier 3)
 
 **Credits:** [Kien Do](https://github.com/kienmarkdo), [Francois Coleongco](https://github.com/fr4nsyz), [John Tyler](https://github.com/john00003), [Mehar Klair](https://github.com/meharklair)
+
+> KernelHarbor originally shipped a custom eBPF agent for kernel event collection. The default
+> pipeline now uses **Falco + falcosidekick** for event collection — more robust, no custom
+> eBPF compilation needed. The original custom eBPF agents (`cmd/agent/` and friends) are
+> preserved in the repo and can still be built via `make agent` for those who prefer them.
 
 ## Architecture
 
@@ -12,18 +17,14 @@ Linux kernel security monitoring with eBPF, heuristic detection, and optional LL
 
 ```mermaid
 graph TB
-    subgraph "Agent (eBPF)"
-        A1[execve hooks] --> RB[Ring Buffer]
-        A2[open hooks] --> RB
-        A3[openat hooks] --> RB
-        A4[connect hooks] --> RB
-        RB --> GP[Go Userspace]
+    subgraph "Event Source"
+        F1[Falco - eBPF] -->|http_output| FS[falcosidekick]
+        FS -->|webhook| PH[Plugin Webhook]
     end
 
     subgraph "Tier 1 — Heuristic (real-time)"
-        GP -->|gRPC Ingest| H1[Regex Pattern Matcher]
+        PH -->|POST /ingest| H1[Regex Pattern Matcher]
         H1 -->|match| H2[Action: KILL_PID / BLOCK_IP]
-        H2 -->|same RPC response| GP
         H1 -->|no match| H3[Submit to Batch Processor]
     end
 
@@ -58,19 +59,13 @@ graph LR
         AS -->|confirmed| IS2[Incident Store]
         AS -->|false positive| IS2[Incident Store]
     end
-
-    subgraph "Agent"
-        AG[Agent] -->|Ingest| HE
-        AG -->|FetchActions| KA
-        AG -->|FetchActions| BI
-    end
 ```
 
 **Key design decision:** The LLM never generates automatic actions. Only the heuristic engine (regex patterns) can produce `KILL_PID` and `BLOCK_IP`. The LLM produces alerts for human review, plus labeled incidents that improve future RAG.
 
 | Tier | Trigger | Latency | Actions Produced |
 |------|---------|---------|-----------------|
-| 1 — Heuristic | Regex match | Same RPC response | `KILL_PID`, `BLOCK_IP` |
+| 1 — Heuristic | Regex match | Same HTTP response | `KILL_PID`, `BLOCK_IP` |
 | 2 — LLM | Interestingness >= threshold | 30s-5m | Alerts only |
 | 3 — Periodic Summary | Timer (configurable) | Hours | Dashboard summaries |
 
@@ -78,16 +73,18 @@ graph LR
 
 ```mermaid
 sequenceDiagram
-    participant K as Kernel eBPF
-    participant A as Agent (Go)
+    participant F as Falco (eBPF)
+    participant FS2 as falcosidekick
+    participant K as Plugin Webhook
     participant S as Analysis Server
     participant ES as Elasticsearch
     participant LLM as LLM Backend
 
-    K->>A: Ring buffer event
-    A->>S: gRPC Ingest
+    F->>FS2: http_output (Falco JSON)
+    FS2->>K: webhook
+    K->>K: Convert to Event format
+    K->>S: POST /ingest
     S->>S: Regex heuristic check
-    S-->>A: Return actions if matched
     S->>ES: Index event
     S->>S: Batch accumulator
     S->>S: Interestingness score
@@ -103,11 +100,9 @@ sequenceDiagram
 ### Prerequisites
 
 ```bash
-# eBPF toolchain (Debian/Ubuntu)
-sudo apt install clang llvm libbpf-dev linux-tools-$(uname -r)
-
-# eBPF toolchain (Fedora/RHEL)
-sudo dnf install clang llvm libbpf-devel kernel-headers
+# Falco + falcosidekick
+# See: https://falco.org/docs/install/
+# See: https://github.com/falcosecurity/falcosidekick
 
 # Optional: Elasticsearch for event persistence
 docker run -d --name elasticsearch -p 9200:9200 \
@@ -124,9 +119,9 @@ ollama pull qwen2.5:7b
 ### Build
 
 ```bash
-make            # Build everything
-make agent      # Build agent only
+make            # Build analysis service
 make analysis   # Build analysis only
+make agent      # Build legacy custom eBPF agent (optional, not needed for Falco)
 make clean      # Remove binaries + generated files
 ```
 
@@ -136,8 +131,14 @@ make clean      # Remove binaries + generated files
 # Terminal 1: Analysis service (heuristic-only by default, zero external deps)
 cd cmd/analysis && ./analysis
 
-# Terminal 2: Agent (requires sudo)
-sudo GRPC_ADDRESS=localhost:9090 ./cmd/agent/agent
+# Terminal 2: Falco + falcosidekick (requires sudo for Falco)
+sudo falco -r rules/kernelharbor-rules.yaml \
+  -o json_output=true \
+  -o http_output.enabled=true \
+  -o http_output.url=http://localhost:2801/
+falcosidekick
+
+# Or via the OpenClaw plugin (recommended): see kernelharbor-openclaw/
 ```
 
 ### Run with LLM (Optional)
@@ -154,11 +155,10 @@ LLM_BACKEND=openai OPENAI_API_KEY=sk-... cd cmd/analysis && ./analysis
 
 | Component | Directory | Description |
 |-----------|-----------|-------------|
-| Agent | `cmd/agent/` | Unified eBPF tracer (execve + open + openat + connect) |
 | Analysis | `cmd/analysis/` | Event analysis pipeline — heuristic + optional LLM |
-| Execve Tracer | `cmd/execve-tracer/` | Standalone execve tracer |
-| Open Tracer | `cmd/open-tracer/` | Standalone open tracer |
-| Openat Tracer | `cmd/openat-tracer/` | Standalone openat tracer |
+| OpenClaw Plugin | `kernelharbor-openclaw/` | Orchestrates Falco + falcosidekick + analysis |
+| Falco Rules | `kernelharbor-openclaw/rules/` | Detection rules for Falco |
+| Legacy Agent | `cmd/agent/` | Original custom eBPF tracer (optional, not needed for Falco) |
 
 ### Analysis Component Internals
 
@@ -231,22 +231,16 @@ The `null` backend (default) means zero external dependencies in production. Set
 | `GRPC_ADDRESS` | `:9090` | gRPC server address |
 | `HTTP_ADDRESS` | `:8080` | HTTP server address |
 
-### Agent
-
-| Variable | Description |
-|----------|-------------|
-| `GRPC_ADDRESS` | gRPC server address (e.g., `localhost:9090`) |
-
 ## Project Structure
 
 ```
 KernelHarbor/
-├── bpf/                       # eBPF C programs
+├── bpf/                       # eBPF C programs (for reference, not built by default)
 ├── cmd/
-│   ├── agent/                 # Unified tracer (execve + open + openat + connect)
-│   ├── execve-tracer/         # Standalone execve tracer
-│   ├── open-tracer/           # Standalone open tracer
-│   ├── openat-tracer/         # Standalone openat tracer
+│   ├── agent/                 # Legacy custom eBPF agent (optional)
+│   ├── execve-tracer/         # Legacy standalone tracer (optional)
+│   ├── open-tracer/           # Legacy standalone tracer (optional)
+│   ├── openat-tracer/         # Legacy standalone tracer (optional)
 │   └── analysis/              # Analysis pipeline
 │       ├── main.go            # Entry point, config, server startup
 │       ├── routes.go          # HTTP route handlers
@@ -263,6 +257,7 @@ KernelHarbor/
 │           ├── llm/              # LLM backends
 │           └── incidents/        # Labeled incident store
 ├── proto/                     # Protocol Buffer definitions
+├── kernelharbor-openclaw/     # OpenClaw plugin (Falco-based event collection)
 ├── deploy/                    # Docker Compose + Dockerfiles
 ├── scripts/                   # Utility scripts
 ├── Makefile
@@ -295,17 +290,36 @@ cd deploy
 docker compose up -d
 ```
 
-This starts Elasticsearch, Ollama, and the analysis service. The agent must run natively (requires eBPF + root).
+This starts Elasticsearch, Ollama, and the analysis service. For event collection, run
+Falco natively (requires eBPF + root) or use the OpenClaw plugin.
 
 ### Heuristic-Only (Production)
 
-No external dependencies — just the analysis binary and the agent binary:
+No external dependencies — just the analysis binary:
 
 ```bash
 cd cmd/analysis && go build -o analysis . && ./analysis
-# In another terminal:
+# Events received via HTTP :8080 from Falco + falcosidekick or the OpenClaw plugin
+```
+
+## Legacy Custom eBPF Agent
+
+KernelHarbor originally shipped a custom eBPF agent. It's still available if you prefer
+not to use Falco:
+
+```bash
+# Build requirements: clang, llvm, libbpf-dev, kernel headers
+sudo apt install clang llvm libbpf-dev linux-tools-$(uname -r)  # Debian/Ubuntu
+
+# Build
+make agent
+
+# Run (requires sudo)
 sudo GRPC_ADDRESS=localhost:9090 ./cmd/agent/agent
 ```
+
+The custom agent sends events via gRPC directly to the analysis service. This path
+receives less maintenance but is preserved for compatibility.
 
 ## License
 

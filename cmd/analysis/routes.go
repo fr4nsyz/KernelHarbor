@@ -19,6 +19,26 @@ type queryEventLike struct {
 	event Event
 }
 
+var apiKey string
+
+func authMiddleware() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if apiKey == "" {
+			c.Next()
+			return
+		}
+		if c.Request.URL.Path == "/health" || c.Request.URL.Path == "/ready" {
+			c.Next()
+			return
+		}
+		if c.GetHeader("X-API-Key") == apiKey {
+			c.Next()
+			return
+		}
+		c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "missing or invalid API key"})
+	}
+}
+
 func (e queryEventLike) GetEventType() string   { return e.event.EventType }
 func (e queryEventLike) GetCommandLine() string { return e.event.CommandLine }
 func (e queryEventLike) GetImagePath() string   { return e.event.ImagePath }
@@ -90,6 +110,7 @@ func registerIngestRoutes(r *gin.Engine, ctx context.Context) {
 						Target:     strconv.Itoa(int(events[i].ProcessID)),
 						Reason:     fmt.Sprintf("Heuristic match: %s", query),
 					})
+					addHeuristicAlert(events[i])
 				}
 			}
 
@@ -174,6 +195,7 @@ func registerIngestRoutes(r *gin.Engine, ctx context.Context) {
 					Target:     strconv.Itoa(int(batch.Events[i].ProcessID)),
 					Reason:     fmt.Sprintf("Heuristic match: %s", query),
 				})
+				addHeuristicAlert(batch.Events[i])
 			}
 
 			if processor != nil {

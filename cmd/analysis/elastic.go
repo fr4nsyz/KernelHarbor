@@ -15,6 +15,7 @@ import (
 const (
 	EventsIndex   = "kb-events"
 	AnalysisIndex = "kb-analysis"
+	AlertsIndex   = "kb-alerts"
 	VectorDim     = 768
 	VectorField   = "embedding"
 	VectorModel   = "nomic-embed-text"
@@ -445,6 +446,139 @@ func (e *ESClient) HybridSearch(ctx context.Context, hostName, queryText string,
 	}
 
 	return events, nil
+}
+
+func (e *ESClient) ensureAlertsIndex(ctx context.Context) error {
+	res, err := e.client.Indices.Exists([]string{AlertsIndex})
+	if err != nil {
+		return fmt.Errorf("failed to check alerts index existence: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.StatusCode == 200 {
+		return nil
+	}
+
+	mapping := map[string]any{
+		"settings": map[string]any{
+			"number_of_shards":   1,
+			"number_of_replicas": 0,
+		},
+		"mappings": map[string]any{
+			"properties": map[string]any{
+				"id":         map[string]any{"type": "keyword"},
+				"timestamp":  map[string]any{"type": "date"},
+				"host.name":  map[string]any{"type": "keyword"},
+				"verdict":    map[string]any{"type": "keyword"},
+				"confidence": map[string]any{"type": "float"},
+				"evidence":   map[string]any{"type": "text"},
+				"summary":    map[string]any{"type": "text"},
+				"model.used": map[string]any{"type": "keyword"},
+				"feedback":   map[string]any{"type": "keyword"},
+				"source":     map[string]any{"type": "keyword"},
+				"events": map[string]any{
+					"type": "nested",
+					"properties": map[string]any{
+						"event.type":     map[string]any{"type": "keyword"},
+						"host.name":      map[string]any{"type": "keyword"},
+						"command.line":   map[string]any{"type": "text"},
+						"process.pid":    map[string]any{"type": "integer"},
+						"image.path":     map[string]any{"type": "keyword"},
+						"user.name":      map[string]any{"type": "keyword"},
+						"remote.address": map[string]any{"type": "ip"},
+						"remote.port":    map[string]any{"type": "integer"},
+						"file.path":      map[string]any{"type": "keyword"},
+					},
+				},
+			},
+		},
+	}
+
+	data, _ := json.Marshal(mapping)
+	res, err = e.client.Indices.Create(
+		AlertsIndex,
+		e.client.Indices.Create.WithBody(bytes.NewReader(data)),
+		e.client.Indices.Create.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create alerts index: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return fmt.Errorf("alerts index creation error: %s", res.String())
+	}
+	log.Printf("Created index %s", AlertsIndex)
+	return nil
+}
+
+func (e *ESClient) IndexAlert(ctx context.Context, alert Alert) error {
+	data, err := json.Marshal(alert)
+	if err != nil {
+		return err
+	}
+	req := esapi.IndexRequest{
+		Index:      AlertsIndex,
+		DocumentID: alert.ID,
+		Body:       bytes.NewReader(data),
+		Refresh:    "false",
+	}
+	res, err := req.Do(ctx, e.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return fmt.Errorf("index alert error: %s", res.String())
+	}
+	return nil
+}
+
+func (e *ESClient) LoadAlerts(ctx context.Context, since time.Time) ([]Alert, error) {
+	query := map[string]any{
+		"query": map[string]any{
+			"range": map[string]any{
+				"timestamp": map[string]any{
+					"gte": since.Format(time.RFC3339),
+				},
+			},
+		},
+		"sort": []any{
+			map[string]any{"timestamp": map[string]any{"order": "desc"}},
+		},
+		"size": 10000,
+	}
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(query); err != nil {
+		return nil, err
+	}
+	res, err := e.client.Search(
+		e.client.Search.WithContext(ctx),
+		e.client.Search.WithIndex(AlertsIndex),
+		e.client.Search.WithBody(&buf),
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer res.Body.Close()
+	if res.IsError() {
+		return nil, fmt.Errorf("load alerts error: %s", res.String())
+	}
+	var sr struct {
+		Hits struct {
+			Hits []struct {
+				Source Alert `json:"_source"`
+			} `json:"hits"`
+		} `json:"hits"`
+	}
+	if err := json.NewDecoder(res.Body).Decode(&sr); err != nil {
+		return nil, err
+	}
+	alerts := make([]Alert, 0, len(sr.Hits.Hits))
+	for _, hit := range sr.Hits.Hits {
+		alerts = append(alerts, hit.Source)
+	}
+	return alerts, nil
 }
 
 func (e *ESClient) IndexAnalysisResult(ctx context.Context, result AnalysisResult) error {

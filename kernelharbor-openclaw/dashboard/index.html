@@ -3,62 +3,119 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>KernelHarbor Dashboard</title>
+<title>KernelHarbor // Threat Console</title>
 <link rel="stylesheet" href="/style.css">
 </head>
 <body>
+<div class="scanlines"></div>
+<div class="grid-overlay"></div>
+
 <header>
-  <h1>KernelHarbor</h1>
-  <span id="health-status" class="health unknown">checking...</span>
+  <div class="logo-block">
+    <div class="logo-icon">&#9760;</div>
+    <div class="logo-text">
+      <h1>KERNEL<span class="accent">HARBOR</span></h1>
+      <div class="logo-sub">REAL-TIME THREAT CONSOLE <span class="blink-slow">|</span> v0.2</div>
+    </div>
+  </div>
+  <div class="header-right">
+    <div class="clock" id="clock">--:--:--</div>
+    <div class="health-badge" id="health-status" data-status="unknown">
+      <span class="health-dot"></span>
+      <span class="health-text">INITIALIZING</span>
+    </div>
+  </div>
 </header>
 
+<nav class="top-bar">
+  <div class="nav-left">
+    <div class="nav-group">
+      <span class="nav-label">SEVERITY</span>
+      <button class="severity-pill active" data-severity="all">ALL</button>
+      <button class="severity-pill" data-severity="malicious">MALICIOUS</button>
+      <button class="severity-pill" data-severity="suspicious">SUSPICIOUS</button>
+      <button class="severity-pill" data-severity="benign">BENIGN</button>
+    </div>
+  </div>
+  <div class="nav-right">
+    <div class="nav-group">
+      <span class="nav-label">VIEW</span>
+      <button id="view-toggle" data-view="cards" class="view-btn active">CARDS</button>
+      <button id="view-timeline-btn" data-view="timeline" class="view-btn">TIMELINE</button>
+    </div>
+    <div class="nav-group">
+      <label class="nav-label">SINCE
+        <select id="filter-since">
+          <option value="1h">1H</option>
+          <option value="6h">6H</option>
+          <option value="24h" selected>24H</option>
+          <option value="72h">72H</option>
+        </select>
+      </label>
+    </div>
+    <button id="refresh-btn" class="btn-icon" title="Refresh">&#8635;</button>
+  </div>
+</nav>
+
 <main>
-  <section id="stats-panel" class="panel">
-    <h2>24h Overview</h2>
-    <div class="stats-grid" id="stats-grid">
-      <div class="stat"><span class="stat-value" id="stat-total">-</span><span class="stat-label">Total</span></div>
-      <div class="stat"><span class="stat-value" id="stat-malicious">-</span><span class="stat-label">Malicious</span></div>
-      <div class="stat"><span class="stat-value" id="stat-suspicious">-</span><span class="stat-label">Suspicious</span></div>
-      <div class="stat"><span class="stat-value" id="stat-confirmed">-</span><span class="stat-label">Confirmed</span></div>
-      <div class="stat"><span class="stat-value" id="stat-fp">-</span><span class="stat-label">False +</span></div>
+  <section class="stats-row">
+    <div class="stat-card" data-type="total">
+      <div class="stat-icon">&#9776;</div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat-total">--</div>
+        <div class="stat-label">TOTAL</div>
+      </div>
+      <div class="stat-glow"></div>
+    </div>
+    <div class="stat-card" data-type="malicious">
+      <div class="stat-icon">&#9888;</div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat-malicious">--</div>
+        <div class="stat-label">MALICIOUS</div>
+      </div>
+      <div class="stat-glow"></div>
+    </div>
+    <div class="stat-card" data-type="suspicious">
+      <div class="stat-icon">&#9888;</div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat-suspicious">--</div>
+        <div class="stat-label">SUSPICIOUS</div>
+      </div>
+      <div class="stat-glow"></div>
+    </div>
+    <div class="stat-card" data-type="confirmed">
+      <div class="stat-icon">&#10003;</div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat-confirmed">--</div>
+        <div class="stat-label">CONFIRMED</div>
+      </div>
+      <div class="stat-glow"></div>
+    </div>
+    <div class="stat-card" data-type="fp">
+      <div class="stat-icon">&#10005;</div>
+      <div class="stat-body">
+        <div class="stat-value" id="stat-fp">--</div>
+        <div class="stat-label">FALSE +</div>
+      </div>
+      <div class="stat-glow"></div>
     </div>
   </section>
 
-  <section class="panel">
-    <div class="alerts-header">
-      <h2>Alerts</h2>
-      <div class="alerts-controls">
-        <button id="view-toggle" data-view="cards" class="btn btn-sm">Timeline</button>
-        <button id="refresh-btn" class="btn btn-sm">Refresh</button>
-      </div>
+  <section class="alerts-section">
+    <div class="section-header">
+      <h2>THREAT FEED <span class="live-dot"></span><span class="live-text">LIVE</span></h2>
+      <div class="alert-count" id="alert-count">0 events</div>
     </div>
-
-    <div class="severity-filters">
-      <button class="severity-pill active" data-severity="all">All</button>
-      <button class="severity-pill" data-severity="malicious">Malicious</button>
-      <button class="severity-pill" data-severity="suspicious">Suspicious</button>
-      <button class="severity-pill" data-severity="benign">Benign</button>
-    </div>
-
-    <div class="alert-filters">
-      <label>Since:
-        <select id="filter-since">
-          <option value="1h">1 hour</option>
-          <option value="6h">6 hours</option>
-          <option value="24h" selected>24 hours</option>
-          <option value="72h">72 hours</option>
-        </select>
-      </label>
-      <label>Limit:
-        <input type="number" id="filter-limit" value="50" min="1" max="500">
-      </label>
-    </div>
-
     <div id="alert-list" class="alert-list">
-      <div class="loading">Loading alerts...</div>
+      <div class="loading">ACQUIRING SIGNAL <span class="loading-dots">...</span></div>
     </div>
   </section>
 </main>
+
+<footer>
+  <div class="footer-left">KERNELHARBOR &copy; 2026</div>
+  <div class="footer-right">AUTO-REFRESH 15s <span class="blink-slow">|</span> <span id="last-refresh">--</span></div>
+</footer>
 
 <script src="/app.js"></script>
 </body>

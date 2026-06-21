@@ -25,6 +25,20 @@ cd kernelharbor-openclaw && node test/smoke.mjs
 
 ## Running
 
+**Quick demo (standalone, no OpenClaw gateway needed):**
+```bash
+cd kernelharbor-openclaw && ./demo.sh
+# Starts ES (Docker) + Ollama + analysis + sends demo events + opens dashboard
+# Set USE_LLM=0 to skip LLM, USE_ES=0 to skip Elasticsearch
+```
+
+**Full Docker stack (with OpenClaw gateway, HMAC signing, Falco pipeline):**
+```bash
+cd kernelharbor-openclaw && ./demo.sh --docker
+# Builds + starts: ES + analysis + gateway (signer + webhook + dashboard) + Falco + falcosidekick
+# Falco monitors real kernel events, events flow through signed HMAC pipeline
+```
+
 1. **Start analysis service** (terminal 1):
    ```bash
    cd cmd/analysis && ./analysis

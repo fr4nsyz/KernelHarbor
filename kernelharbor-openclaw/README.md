@@ -54,6 +54,34 @@ graph TB
 When `KH_SIGNING_SECRET` is empty, HMAC is disabled and the pipeline falls back to
 direct `falcosidekick → webhook` (backward compatible).
 
+## Quick Demo
+
+### Standalone
+
+```bash
+./demo.sh
+```
+
+Starts Elasticsearch (Docker), Ollama, analysis service, sends 5 demo events (benign, suspicious, malicious, crypto mining, data exfil), prints stats, and opens the dashboard. Press Ctrl+C to stop all services.
+
+```bash
+USE_LLM=0 ./demo.sh    # heuristic-only, no Ollama needed
+USE_ES=0  ./demo.sh    # no Elasticsearch, in-memory only
+```
+
+### Full Docker Stack (OpenClaw gateway + HMAC + Falco)
+
+```bash
+./demo.sh --docker
+```
+
+Builds + starts the complete pipeline in Docker: ES + analysis + OpenClaw gateway (signer + webhook + dashboard) + Falco + falcosidekick. Falco monitors real kernel events and events flow through the signed HMAC pipeline.
+
+```bash
+KH_SIGNING_SECRET=my-secret ./demo.sh --docker   # custom HMAC secret
+KH_LLM_BACKEND=ollama            ./demo.sh --docker   # with LLM
+```
+
 ## Installation
 
 ### One-Liner (recommended)
@@ -89,18 +117,22 @@ ln -s $(pwd) /path/to/openclaw/plugins/kernelharbor-openclaw
 ### Docker Compose
 
 ```bash
-docker compose up -d elasticsearch analysis
+# Full stack (ES + analysis + gateway + signer + Falco + falcosidekick):
+KH_SIGNING_SECRET=kh-demo-secret docker compose up -d
 
-# With Falco + falcosidekick:
-docker compose --profile falco up -d
+# Or use the demo script:
+./demo.sh --docker
 
 # With LLM (Ollama):
 docker compose --profile llm up -d
+
+# Minimal (ES + analysis only):
+docker compose up -d elasticsearch analysis
 ```
 
-See `docker-compose.yml` for service details. The HMAC signer and webhook are provided
-by the OpenClaw plugin (not containerized); configure falcosidekick to forward through
-the signer: `WEBHOOK_ADDRESS: "http://host.docker.internal:28079/falco/event"`.
+The gateway container runs `gateway.mjs` which simulates the OpenClaw Gateway API,
+loads `plugin.mjs`, and manages the HMAC signer + webhook + dashboard. Falcosidekick
+is wired to forward events through the signer at `gateway:28079`.
 
 ## Plugin API
 
@@ -259,8 +291,10 @@ cd ../cmd/analysis && go test -count=1 -timeout 120s ./...
 kernelharbor-openclaw/
 ├── plugin.mjs              # Plugin entry: subprocess orchestration, webhook, HMAC verification
 ├── signer.mjs              # HMAC-SHA256 signing proxy
+├── gateway.mjs             # Mock OpenClaw gateway (loads plugin, runs signer + webhook + dashboard)
 ├── openclaw.plugin.json    # Plugin manifest + config schema
 ├── install.sh              # One-liner install script
+├── demo.sh                 # Quick standalone demo script
 ├── docker-compose.yml      # Compose: ES, analysis, Falco, falcosidekick, Ollama
 ├── package.json
 ├── bin/                    # Compiled analysis binary (built by setup.mjs)

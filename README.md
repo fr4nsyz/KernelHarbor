@@ -135,6 +135,23 @@ ollama pull nomic-embed-text
 ollama pull qwen2.5:7b
 ```
 
+### Quick Demo (standalone)
+
+```bash
+cd kernelharbor-openclaw && ./demo.sh
+# Starts Elasticsearch (Docker) + Ollama + analysis + sends demo events + opens dashboard
+# Set USE_LLM=0 to skip LLM, USE_ES=0 to skip Elasticsearch
+```
+
+### Full Docker Stack (OpenClaw gateway + HMAC + Falco)
+
+```bash
+cd kernelharbor-openclaw && ./demo.sh --docker
+# Builds + starts: ES + analysis + gateway (signer + webhook + dashboard) + Falco + falcosidekick
+# Falco monitors real kernel events, events flow through signed HMAC pipeline
+# Dashboard: http://localhost:8181
+```
+
 ### Install (recommended)
 
 ```bash
@@ -186,6 +203,7 @@ LLM_BACKEND=openai OPENAI_API_KEY=sk-... cd cmd/analysis && ./analysis
 |-----------|-----------|-------------|
 | Analysis | `cmd/analysis/` | Event analysis pipeline: heuristic + optional LLM |
 | OpenClaw Plugin | `kernelharbor-openclaw/` | Orchestrates Falco + falcosidekick + analysis |
+| Mock Gateway | `kernelharbor-openclaw/gateway.mjs` | Simulates OpenClaw Gateway API, runs signer + webhook + dashboard |
 | HMAC Signer | `kernelharbor-openclaw/signer.mjs` | HMAC-SHA256 signing proxy for pipeline auth |
 | Falco Rules | `kernelharbor-openclaw/rules/` | Detection rules for Falco |
 | Legacy Agent | `cmd/agent/` | Original custom eBPF tracer (optional, not needed for Falco) |
@@ -320,7 +338,9 @@ KernelHarbor/
 ├── proto/                     # Protocol Buffer definitions
 ├── kernelharbor-openclaw/     # OpenClaw plugin (Falco-based event collection)
 │   ├── plugin.mjs             # Plugin entry: manages all subprocesses
+│   ├── gateway.mjs            # Mock OpenClaw gateway (loads plugin, signer + webhook + dashboard)
 │   ├── signer.mjs             # HMAC-SHA256 signing proxy
+│   ├── demo.sh                # Quick standalone demo script
 │   ├── cli/                   # CLI tools (setup, status, dashboard)
 │   ├── dashboard/             # SPA dashboard (HTML + JS + CSS)
 │   ├── rules/                 # Falco detection rules
@@ -361,13 +381,19 @@ ES_ADDRESSES=http://localhost:9200 OLLAMA_ADDRESS=http://localhost:11434 \
 
 ```bash
 cd kernelharbor-openclaw
-docker compose up -d elasticsearch analysis
 
-# With Falco + falcosidekick:
-docker compose --profile falco up -d
+# Full stack with OpenClaw gateway + HMAC signer + Falco pipeline:
+./demo.sh --docker
+
+# Or manually:
+KH_SIGNING_SECRET=your-secret docker compose up -d
+# Starts: ES + analysis + gateway (signer + webhook + dashboard) + Falco + falcosidekick
 
 # With LLM (Ollama):
 docker compose --profile llm up -d
+
+# Minimal (ES + analysis only):
+docker compose up -d elasticsearch analysis
 ```
 
 ### Heuristic-Only (Production)

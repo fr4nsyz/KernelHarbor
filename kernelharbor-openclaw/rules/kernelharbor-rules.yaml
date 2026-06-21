@@ -1,0 +1,188 @@
+# KernelHarbor Falco-compatible detection rules
+# Mirrors the heuristic patterns in cmd/analysis/grpc.go
+# Load with: falco -r kernelharbor-rules.yaml
+
+- rule: Reverse Shell Detection
+  desc: Detect reverse shell attempts via bash, nc, python, or socat
+  condition: >-
+    (proc.name = "bash" or proc.name = "sh" or proc.name = "nc" or
+     proc.name = "ncat" or proc.name = "socat" or proc.name = "python" or
+     proc.name = "python3" or proc.name = "perl") and
+    (evt.type = execve or evt.type = clone or evt.type = fork) and
+    (
+      (proc.cmdline contains "/dev/tcp" or
+       proc.cmdline contains "/dev/udp" or
+       proc.cmdline contains ">&1" or
+       proc.cmdline contains "0>&1") or
+      (proc.cmdline icontains "bash -i" or
+       proc.cmdline icontains "sh -i") or
+      (proc.cmdline icontains "nc -e" or
+       proc.cmdline icontains "ncat -e" or
+       proc.cmdline icontains "socat exec") or
+      (proc.cmdline icontains "socket" and
+       (proc.name = "python" or proc.name = "python3" or proc.name = "perl"))
+    )
+  output: >
+    Reverse shell detected (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline image=%proc.exe)
+  priority: CRITICAL
+  tags: [kernelharbor, mitre_execution, T1059]
+
+- rule: Curl Piped to Shell
+  desc: Detect curl piped to shell (curl [...] | bash/sh)
+  condition: >-
+    proc.name = "curl" and evt.type = execve and
+    (proc.cmdline icontains "| bash" or
+     proc.cmdline icontains "| sh" or
+     proc.cmdline icontains "| python" or
+     proc.cmdline icontains "| python3")
+  output: >
+    Curl piped to shell (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: CRITICAL
+  tags: [kernelharbor, mitre_execution, T1059.007]
+
+- rule: Wget to Unusual Location
+  desc: Detect wget downloading to root filesystem or piped to shell
+  condition: >-
+    proc.name = "wget" and evt.type = execve and
+    (proc.cmdline icontains "| bash" or
+     proc.cmdline icontains "| sh" or
+     proc.cmdline icontains "-O /" or
+     proc.cmdline icontains "-Q /")
+  output: >
+    Wget to unusual location (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: HIGH
+  tags: [kernelharbor, mitre_execution, T1105]
+
+- rule: Network Tool Execution
+  desc: Detect netcat/ncat/socat usage
+  condition: >-
+    (proc.name = "nc" or proc.name = "ncat" or proc.name = "netcat" or
+     proc.name = "socat") and evt.type = execve
+  output: >
+    Network tool executed (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline image=%proc.exe)
+  priority: HIGH
+  tags: [kernelharbor, mitre_execution, T1059]
+
+- rule: Base64 Decode Suspicious
+  desc: Detect base64 decode which may indicate obfuscated payloads
+  condition: >-
+    proc.name = "base64" and evt.type = execve and
+    (proc.cmdline contains "-d" or proc.cmdline contains "--decode")
+  output: >
+    Base64 decode executed (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: HIGH
+  tags: [kernelharbor, mitre_defense_evasion, T1027]
+
+- rule: Encoded Command Execution
+  desc: Detect PowerShell or other encoded command execution
+  condition: >-
+    (proc.name = "powershell" or proc.name = "pwsh") and evt.type = execve
+  output: >
+    PowerShell execution (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: HIGH
+  tags: [kernelharbor, mitre_execution, T1059.001]
+
+- rule: Python Suspicious Modules
+  desc: Detect Python processes using socket, subprocess, or os system calls
+  condition: >-
+    (proc.name = "python" or proc.name = "python3") and
+    evt.type = execve and
+    (proc.cmdline icontains "socket" or
+     proc.cmdline icontains "subprocess" or
+     proc.cmdline icontains "pty" or
+     proc.cmdline icontains "os.system" or
+     proc.cmdline icontains "os.popen" or
+     proc.cmdline icontains "os.exec")
+  output: >
+    Python suspicious module usage (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: HIGH
+  tags: [kernelharbor, mitre_execution, T1059.006]
+
+- rule: Temp Directory Execution
+  desc: Detect binaries executed from temp directories
+  condition: >-
+    evt.type = execve and
+    (proc.exe startswith "/tmp" or
+     proc.exe startswith "/var/tmp" or
+     proc.exe startswith "/dev/shm")
+  output: >
+    Execution from temp directory (user=%user.name pid=%proc.pid
+    image=%proc.exe cmdline=%proc.cmdline)
+  priority: HIGH
+  tags: [kernelharbor, mitre_defense_evasion, T1074]
+
+- rule: Crypto Mining Pool Connection
+  desc: Detect connections to known crypto mining pools or mining ports
+  condition: >-
+    evt.type = connect and
+    (fd.sport = 3333 or fd.sport = 3334 or fd.sport = 4444 or
+     fd.sport = 5555 or fd.sport = 7777 or fd.sport = 8332 or
+     fd.sport = 8333 or fd.sport = 14444)
+  output: >
+    Connection to mining pool port (user=%user.name pid=%proc.pid
+    proc=%proc.exe connection=%fd.name)
+  priority: CRITICAL
+  tags: [kernelharbor, mitre_impact, T1496]
+
+- rule: Script File Execution
+  desc: Detect shell script execution from unusual paths
+  condition: >-
+    evt.type = execve and
+    (proc.cmdline icontains ".sh" or proc.cmdline icontains ".bash") and
+    not proc.name in ["make", "dpkg", "apt", "apt-get", "snap", "npm"]
+  output: >
+    Script execution detected (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: NOTICE
+  tags: [kernelharbor, mitre_execution, T1059.004]
+
+- rule: Perl One-Liner
+  desc: Detect perl -e execution (often used for one-liner payloads)
+  condition: >-
+    proc.name = "perl" and evt.type = execve and
+    proc.cmdline icontains "-e"
+  output: >
+    Perl one-liner execution (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: HIGH
+  tags: [kernelharbor, mitre_execution, T1059.006]
+
+- rule: Ruby One-Liner
+  desc: Detect ruby -e execution (often used for one-liner payloads)
+  condition: >-
+    proc.name = "ruby" and evt.type = execve and
+    proc.cmdline icontains "-e"
+  output: >
+    Ruby one-liner execution (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: HIGH
+  tags: [kernelharbor, mitre_execution, T1059.006]
+
+- rule: PHP Code Execution
+  desc: Detect php -r execution (inline code execution)
+  condition: >-
+    proc.name = "php" and evt.type = execve and
+    proc.cmdline icontains "-r"
+  output: >
+    PHP inline execution (user=%user.name pid=%proc.pid
+    cmdline=%proc.cmdline)
+  priority: HIGH
+  tags: [kernelharbor, mitre_execution, T1059.006]
+
+- rule: Rapid Outbound Connections
+  desc: Detect rapid outbound connections to multiple unique ports
+  condition: >-
+    evt.type = connect and fd.type = ipv4 and
+    evt.dir = >
+  output: >
+    Outbound connection detected (user=%user.name pid=%proc.pid
+    proc=%proc.exe connection=%fd.name)
+  priority: NOTICE
+  tags: [kernelharbor, mitre_discovery, T1046]

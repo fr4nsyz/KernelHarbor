@@ -3,9 +3,7 @@ package main
 import (
 	"context"
 	"crypto/rand"
-	"encoding/json"
 	"flag"
-	"fmt"
 	"log"
 	"math/big"
 	"net/http"
@@ -16,63 +14,104 @@ import (
 	"syscall"
 	"time"
 
+	"KernelHarbor/cmd/analysis/internal/incidents"
+	"KernelHarbor/cmd/analysis/internal/interestingness"
+	"KernelHarbor/cmd/analysis/internal/llm"
+
 	"github.com/gin-gonic/gin"
 )
 
 type Config struct {
-	Server struct {
-		Addr string `yaml:"addr" json:"addr"`
-	} `yaml:"server" json:"server"`
-	Protocol      string `yaml:"protocol" json:"protocol"`
+	HTTPAddr string `json:"http_addr"`
+	GRPCAddr string `json:"grpc_addr"`
+	Protocol string `json:"protocol"`
+
 	Elasticsearch struct {
-		Addresses []string `yaml:"addresses" json:"addresses"`
-		Username  string   `yaml:"username" json:"username"`
-		Password  string   `yaml:"password" json:"password"`
-		Index     string   `yaml:"index" json:"index"`
-	} `yaml:"elasticsearch" json:"elasticsearch"`
-	Ollama struct {
-		Address    string `yaml:"address" json:"address"`
-		Model      string `yaml:"model" json:"model"`
-		EmbedModel string `yaml:"embed_model" json:"embed_model"`
-		EmbedDim   int    `yaml:"embed_dim" json:"embed_dim"`
-	} `yaml:"ollama" json:"ollama"`
+		Addresses []string `json:"addresses"`
+		Username  string   `json:"username"`
+		Password  string   `json:"password"`
+		Index     string   `json:"index"`
+	} `json:"elasticsearch"`
+
+	LLM struct {
+		Backend   string  `json:"backend"`   // "none", "ollama", "openai", "anthropic"
+		Threshold float64 `json:"threshold"` // 0.0-1.0, default 0.6
+
+		Ollama struct {
+			Address    string `json:"address"`
+			Model      string `json:"model"`
+			EmbedModel string `json:"embed_model"`
+			EmbedDim   int    `json:"embed_dim"`
+		} `json:"ollama"`
+
+		OpenAI struct {
+			APIKey string `json:"api_key"`
+			Model  string `json:"model"`
+		} `json:"openai"`
+
+		Anthropic struct {
+			APIKey string `json:"api_key"`
+			Model  string `json:"model"`
+		} `json:"anthropic"`
+	} `json:"llm"`
+
 	Processor struct {
-		Workers      int           `yaml:"workers" json:"workers"`
-		BatchSize    int           `yaml:"batch_size" json:"batch_size"`
-		BatchTimeout time.Duration `yaml:"batch_timeout" json:"batch_timeout"`
-	} `yaml:"processor" json:"processor"`
+		Workers      int           `json:"workers"`
+		BatchSize    int           `json:"batch_size"`
+		BatchTimeout time.Duration `json:"batch_timeout"`
+	} `json:"processor"`
 }
 
 func getDefaultConfig() Config {
 	return Config{
-		Server: struct {
-			Addr string `yaml:"addr" json:"addr"`
-		}{Addr: ":8080"},
+		HTTPAddr: ":8080",
+		GRPCAddr: ":9090",
 		Protocol: "both",
 		Elasticsearch: struct {
-			Addresses []string `yaml:"addresses" json:"addresses"`
-			Username  string   `yaml:"username" json:"username"`
-			Password  string   `yaml:"password" json:"password"`
-			Index     string   `yaml:"index" json:"index"`
+			Addresses []string `json:"addresses"`
+			Username  string   `json:"username"`
+			Password  string   `json:"password"`
+			Index     string   `json:"index"`
 		}{
 			Addresses: []string{"http://localhost:9200"},
 			Index:     EventsIndex,
 		},
-		Ollama: struct {
-			Address    string `yaml:"address" json:"address"`
-			Model      string `yaml:"model" json:"model"`
-			EmbedModel string `yaml:"embed_model" json:"embed_model"`
-			EmbedDim   int    `yaml:"embed_dim" json:"embed_dim"`
+		LLM: struct {
+			Backend   string  `json:"backend"`
+			Threshold float64 `json:"threshold"`
+			Ollama    struct {
+				Address    string `json:"address"`
+				Model      string `json:"model"`
+				EmbedModel string `json:"embed_model"`
+				EmbedDim   int    `json:"embed_dim"`
+			} `json:"ollama"`
+			OpenAI struct {
+				APIKey string `json:"api_key"`
+				Model  string `json:"model"`
+			} `json:"openai"`
+			Anthropic struct {
+				APIKey string `json:"api_key"`
+				Model  string `json:"model"`
+			} `json:"anthropic"`
 		}{
-			Address:    "http://localhost:11434",
-			Model:      "qwen2.5:1.5b",
-			EmbedModel: "nomic-embed-text",
-			EmbedDim:   VectorDim,
+			Backend:   "none",
+			Threshold: 0.6,
+			Ollama: struct {
+				Address    string `json:"address"`
+				Model      string `json:"model"`
+				EmbedModel string `json:"embed_model"`
+				EmbedDim   int    `json:"embed_dim"`
+			}{
+				Address:    "http://localhost:11434",
+				Model:      "qwen2.5:7b",
+				EmbedModel: "nomic-embed-text",
+				EmbedDim:   VectorDim,
+			},
 		},
 		Processor: struct {
-			Workers      int           `yaml:"workers" json:"workers"`
-			BatchSize    int           `yaml:"batch_size" json:"batch_size"`
-			BatchTimeout time.Duration `yaml:"batch_timeout" json:"batch_timeout"`
+			Workers      int           `json:"workers"`
+			BatchSize    int           `json:"batch_size"`
+			BatchTimeout time.Duration `json:"batch_timeout"`
 		}{
 			Workers:      3,
 			BatchSize:    100,
@@ -88,6 +127,7 @@ func main() {
 
 	cfg := getDefaultConfig()
 
+	// Environment overrides for Elasticsearch
 	if addr := os.Getenv("ES_ADDRESSES"); addr != "" {
 		cfg.Elasticsearch.Addresses = []string{addr}
 	}
@@ -98,19 +138,60 @@ func main() {
 	if esIndex := os.Getenv("ES_INDEX"); esIndex != "" {
 		cfg.Elasticsearch.Index = esIndex
 	}
+
+	// Environment overrides for LLM
+	if backend := os.Getenv("LLM_BACKEND"); backend != "" {
+		cfg.LLM.Backend = backend
+	}
+	if threshold := os.Getenv("LLM_THRESHOLD"); threshold != "" {
+		if v, err := strconv.ParseFloat(threshold, 64); err == nil {
+			cfg.LLM.Threshold = v
+		}
+	}
 	if ollamaAddr := os.Getenv("OLLAMA_ADDRESS"); ollamaAddr != "" {
-		cfg.Ollama.Address = ollamaAddr
+		cfg.LLM.Ollama.Address = ollamaAddr
 	}
 	if ollamaModel := os.Getenv("OLLAMA_MODEL"); ollamaModel != "" {
-		cfg.Ollama.Model = ollamaModel
+		cfg.LLM.Ollama.Model = ollamaModel
 	}
+	if openAIKey := os.Getenv("OPENAI_API_KEY"); openAIKey != "" {
+		cfg.LLM.OpenAI.APIKey = openAIKey
+	}
+	if openAIModel := os.Getenv("OPENAI_MODEL"); openAIModel != "" {
+		cfg.LLM.OpenAI.Model = openAIModel
+	}
+	if anthropicKey := os.Getenv("ANTHROPIC_API_KEY"); anthropicKey != "" {
+		cfg.LLM.Anthropic.APIKey = anthropicKey
+	}
+	if anthropicModel := os.Getenv("ANTHROPIC_MODEL"); anthropicModel != "" {
+		cfg.LLM.Anthropic.Model = anthropicModel
+	}
+
+	// Protocol override
 	if protocol := os.Getenv("PROTOCOL"); protocol != "" {
 		cfg.Protocol = protocol
+	}
+
+	// gRPC address override
+	if g := os.Getenv("GRPC_ADDRESS"); g != "" {
+		cfg.GRPCAddr = g
+	}
+
+	// HTTP address override
+	if h := os.Getenv("HTTP_ADDRESS"); h != "" {
+		cfg.HTTPAddr = h
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	// Initialize state
+	actionStore = NewActionStore()
+	alertStore := NewAlertStore()
+	interestingnessScorer := interestingness.New()
+	incidentStore := incidents.NewStore()
+
+	// Connect to Elasticsearch (optional)
 	if len(cfg.Elasticsearch.Addresses) > 0 {
 		client, err := NewESClient(ESConfig{
 			Addresses: cfg.Elasticsearch.Addresses,
@@ -119,268 +200,102 @@ func main() {
 			Index:     cfg.Elasticsearch.Index,
 		})
 		if err != nil {
-			log.Printf("Warning: Failed to connect to Elasticsearch: %v", err)
+			log.Printf("Warning: Elasticsearch unavailable: %v (continuing without ES)", err)
 		} else {
 			esClientInstance = client
 			log.Printf("Connected to Elasticsearch at %v", cfg.Elasticsearch.Addresses)
 		}
 	}
 
-	ollamaClient = NewOllamaClient(OllamaConfig{
-		Address:    cfg.Ollama.Address,
-		Model:      cfg.Ollama.Model,
-		EmbedModel: cfg.Ollama.EmbedModel,
-		EmbedDim:   cfg.Ollama.EmbedDim,
-	})
-	log.Printf("Ollama client configured: %s %s", cfg.Ollama.Address, cfg.Ollama.Model)
+	// Initialize LLM backend
+	var llmBackend llm.Backend
+	switch cfg.LLM.Backend {
+	case "ollama":
+		if cfg.LLM.Ollama.Address == "" {
+			log.Fatal("LLM_BACKEND=ollama but OLLAMA_ADDRESS is not set")
+		}
+		llmBackend = llm.NewOllama(llm.OllamaConfig{
+			Address:    cfg.LLM.Ollama.Address,
+			Model:      cfg.LLM.Ollama.Model,
+			EmbedModel: cfg.LLM.Ollama.EmbedModel,
+			EmbedDim:   cfg.LLM.Ollama.EmbedDim,
+		})
+		log.Printf("LLM backend: ollama (%s)", cfg.LLM.Ollama.Model)
+	case "openai":
+		if cfg.LLM.OpenAI.APIKey == "" {
+			log.Fatal("LLM_BACKEND=openai but OPENAI_API_KEY is not set")
+		}
+		llmBackend = llm.NewOpenAI(llm.OpenAIConfig{
+			APIKey: cfg.LLM.OpenAI.APIKey,
+			Model:  cfg.LLM.OpenAI.Model,
+		})
+		log.Printf("LLM backend: openai (%s)", cfg.LLM.OpenAI.Model)
+	case "anthropic":
+		if cfg.LLM.Anthropic.APIKey == "" {
+			log.Fatal("LLM_BACKEND=anthropic but ANTHROPIC_API_KEY is not set")
+		}
+		llmBackend = llm.NewAnthropic(llm.AnthropicConfig{
+			APIKey: cfg.LLM.Anthropic.APIKey,
+			Model:  cfg.LLM.Anthropic.Model,
+		})
+		log.Printf("LLM backend: anthropic (%s)", cfg.LLM.Anthropic.Model)
+	default:
+		llmBackend = llm.NewNull()
+		log.Printf("LLM backend: none (heuristic-only mode)")
+	}
 
+	log.Printf("LLM threshold: %.2f (batches scoring below this skip LLM analysis)", cfg.LLM.Threshold)
+
+	// Initialize batch processor
 	processor = NewBatchProcessor(BatchProcessorConfig{
 		Workers:      cfg.Processor.Workers,
 		BatchSize:    cfg.Processor.BatchSize,
 		BatchTimeout: cfg.Processor.BatchTimeout,
+		LLMThreshold: cfg.LLM.Threshold,
 	})
+	processor.SetInterestingness(interestingnessScorer)
+	processor.SetLLMBackend(llmBackend)
+	processor.SetIncidentStore(incidentStore)
+	processor.SetAlertStore(alertStore)
+	if o, ok := llmBackend.(*llm.OllamaBackend); ok {
+		processor.SetEmbedder(o)
+	}
 	processor.Start()
 
+	// Initialize HTTP routes
 	router := gin.Default()
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 
-	router.GET("/health", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"status":   "ok",
-			"events":   "ready",
-			"analyzer": "ready",
-		})
-	})
+	// Register routes
+	registerHealthRoutes(router)
+	registerIngestRoutes(router, ctx)
+	registerAnalysisRoutes(router)
+	registerDashboardRoutes(router, alertStore, incidentStore)
 
-	router.GET("/ready", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{
-			"elasticsearch": esClientInstance != nil,
-			"ollama":        ollamaClient != nil,
-		})
-	})
-
-	router.POST("/ingest", func(c *gin.Context) {
-		raw, err := c.GetRawData()
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-			return
-		}
-
-		var events []Event
-		var single Event
-		if err := json.Unmarshal(raw, &single); err == nil && single.EventType != "" {
-			events = []Event{single}
-		} else if err := json.Unmarshal(raw, &events); err != nil || len(events) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "expected a single event object or array of events"})
-			return
-		}
-
-		for i := range events {
-			if events[i].Timestamp.IsZero() {
-				events[i].Timestamp = time.Now()
-			}
-			if events[i].EventID == "" {
-				events[i].EventID = generateEventID()
-			}
-
-			query := events[i].CommandLine
-			if query == "" {
-				query = events[i].FilePath
-			}
-			if query == "" {
-				query = events[i].RemoteAddr
-			}
-
-			verdict := "benign"
-			confidence := float32(0.0)
-
-			if autoAnalyzeByDefault && query != "" {
-				if hasSuspiciousPattern(query) {
-					verdict = "suspicious"
-					confidence = 0.7
-					actionStore.Add(events[i].HostName, Action{
-						ID:         generateEventID(),
-						Timestamp:  time.Now(),
-						HostName:   events[i].HostName,
-						ActionType: ActionKillPID,
-						Target:     strconv.Itoa(int(events[i].ProcessID)),
-						Reason:     fmt.Sprintf("Heuristic match: %s", query),
-					})
-				} else {
-					confidence = 0.3
-				}
-			}
-
-			log.Printf("Received event: %s [%s] PID=%d CMD=%s | VERDICT=%s CONFIDENCE=%.2f",
-				events[i].EventType, events[i].EventID, events[i].ProcessID, events[i].CommandLine, verdict, confidence)
-
-			processor.Submit(events[i])
-		}
-
-		if esClientInstance != nil {
-			if err := esClientInstance.BulkIndex(ctx, events); err != nil {
-				log.Printf("Failed to index events: %v", err)
-			}
-		}
-
-		hostName := ""
-		if len(events) > 0 {
-			hostName = events[0].HostName
-		}
-		actions := actionStore.Fetch(hostName)
-		if actions == nil {
-			actions = []Action{}
-		}
-		c.JSON(http.StatusAccepted, gin.H{
-			"accepted": len(events),
-			"actions":  actions,
-		})
-	})
-
-	router.POST("/ingest/batch", func(c *gin.Context) {
-		raw, err := c.GetRawData()
-		if err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "failed to read body"})
-			return
-		}
-
-		var batch EventBatch
-		var single Event
-		if err := json.Unmarshal(raw, &single); err == nil && single.EventType != "" {
-			batch.Events = []Event{single}
-		} else if err := json.Unmarshal(raw, &batch); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		if len(batch.Events) == 0 {
-			c.JSON(http.StatusBadRequest, gin.H{"error": "no events in batch"})
-			return
-		}
-
-		if batch.ReceivedAt.IsZero() {
-			batch.ReceivedAt = time.Now()
-		}
-
-		for i := range batch.Events {
-			if batch.Events[i].Timestamp.IsZero() {
-				batch.Events[i].Timestamp = batch.ReceivedAt
-			}
-			if batch.Events[i].EventID == "" {
-				batch.Events[i].EventID = generateEventID()
-			}
-			if batch.Events[i].HostName == "" {
-				batch.Events[i].HostName = batch.HostName
-			}
-
-			query := batch.Events[i].CommandLine
-			if query == "" {
-				query = batch.Events[i].FilePath
-			}
-			if query == "" {
-				query = batch.Events[i].RemoteAddr
-			}
-
-			if autoAnalyzeByDefault && query != "" && hasSuspiciousPattern(query) {
-				actionStore.Add(batch.Events[i].HostName, Action{
-					ID:         generateEventID(),
-					Timestamp:  time.Now(),
-					HostName:   batch.Events[i].HostName,
-					ActionType: ActionKillPID,
-					Target:     strconv.Itoa(int(batch.Events[i].ProcessID)),
-					Reason:     fmt.Sprintf("Heuristic match: %s", query),
-				})
-			}
-
-			processor.Submit(batch.Events[i])
-		}
-
-		if esClientInstance != nil {
-			if err := esClientInstance.BulkIndex(ctx, batch.Events); err != nil {
-				log.Printf("Failed to index batch: %v", err)
-			}
-		}
-
-		actions := actionStore.Fetch(batch.HostName)
-		if actions == nil {
-			actions = []Action{}
-		}
-		c.JSON(http.StatusAccepted, gin.H{
-			"accepted": len(batch.Events),
-			"actions":  actions,
-		})
-	})
-
-	router.GET("/actions/:hostname", func(c *gin.Context) {
-		hostname := c.Param("hostname")
-		actions := actionStore.Fetch(hostname)
-		if actions == nil {
-			actions = []Action{}
-		}
-		c.JSON(http.StatusOK, gin.H{"actions": actions})
-	})
-
-	router.POST("/analyze", func(c *gin.Context) {
-		var req struct {
-			HostName string `json:"host.name" binding:"required"`
-			Query    string `json:"query" binding:"required"`
-		}
-		if err := c.ShouldBindJSON(&req); err != nil {
-			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-			return
-		}
-
-		if ollamaClient == nil {
-			c.JSON(http.StatusServiceUnavailable, gin.H{"error": "Ollama not configured"})
-			return
-		}
-
-		prompt := "Analyze this security event: " + req.Query + "\nIs this malicious? Answer in JSON format: {\"verdict\": \"benign|suspicious|malicious\", \"confidence\": 0.0-1.0, \"summary\": \"brief explanation\"}"
-		log.Printf("Prompt: %s", prompt)
-
-		response, err := ollamaClient.Generate(context.Background(), prompt)
-		if err != nil {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "generation failed: " + err.Error()})
-			return
-		}
-
-		verdict, confidence, evidence, summary, _ := parseAnalysisResponse(response)
-
-		c.JSON(http.StatusOK, gin.H{
-			"verdict":    verdict,
-			"confidence": confidence,
-			"evidence":   evidence,
-			"summary":    summary,
-			"raw":        response,
-		})
-	})
-
+	// Start HTTP server
 	srv := &http.Server{
-		Addr:    cfg.Server.Addr,
+		Addr:    cfg.HTTPAddr,
 		Handler: router,
 	}
 
 	if cfg.Protocol == "http" || cfg.Protocol == "both" {
 		go func() {
-			log.Printf("Starting HTTP server on %s", cfg.Server.Addr)
+			log.Printf("HTTP server starting on %s", cfg.HTTPAddr)
 			if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				log.Fatalf("Failed to start server: %v", err)
+				log.Fatalf("HTTP server error: %v", err)
 			}
 		}()
 	}
 
-	grpcAddr := ":9090"
-	if g := os.Getenv("GRPC_ADDRESS"); g != "" {
-		grpcAddr = g
-	}
-
+	// Start gRPC server
 	var grpcWg sync.WaitGroup
 	if cfg.Protocol == "grpc" || cfg.Protocol == "both" {
 		grpcWg.Add(1)
-		go startGrpcServer(grpcAddr, &grpcWg)
+		go startGrpcServer(cfg.GRPCAddr, &grpcWg)
 	}
 
+	// Wait for shutdown
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit

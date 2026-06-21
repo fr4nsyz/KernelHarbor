@@ -1,0 +1,28 @@
+{
+  "name": "@kernelharbor/openclaw-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "KernelHarbor security layer for OpenClaw — eBPF monitoring, heuristic detection, LLM analysis",
+  "openclaw": {
+    "extensions": ["./plugin.mjs"],
+    "compat": {
+      "pluginApi": ">=2026.3.24-beta.2",
+      "minGatewayVersion": "2026.3.24-beta.2"
+    }
+  },
+  "bin": {
+    "kh-setup": "./cli/setup.mjs",
+    "kh-status": "./cli/status.mjs",
+    "kh-dashboard": "./cli/dashboard.mjs"
+  },
+  "files": [
+    "plugin.mjs",
+    "cli/",
+    "dashboard/",
+    "rules/",
+    "skill/",
+    "docker-compose.yml",
+    "openclaw.plugin.json"
+  ]
+}

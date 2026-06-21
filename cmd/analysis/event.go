@@ -95,7 +95,8 @@ func (e *Event) ToBehaviorSummary() string {
 		behaviors = append(behaviors, "reverse_shell")
 	}
 
-	if containsAny(cmd, []string{"curl", "wget", "fetch", "curl"}) && containsAny(cmd, []string{"|", "&&", ";", "bash", "sh", "python", "python3"}) {
+	if containsAny(cmd, []string{"curl", "wget", "fetch"}) &&
+		containsAny(cmd, []string{"|", "&&", ";", "bash", "sh", "python", "python3"}) {
 		behaviors = append(behaviors, "remote_code_execution")
 	}
 
@@ -103,12 +104,30 @@ func (e *Event) ToBehaviorSummary() string {
 		behaviors = append(behaviors, "encoded_command")
 	}
 
-	if containsAny(cmd, []string{"/tmp", "/var/tmp", "/dev/shm"}) {
+	if containsAny(img, []string{"/tmp", "/var/tmp", "/dev/shm"}) {
 		behaviors = append(behaviors, "temp_directory_execution")
+	}
+
+	if e.EventType == "connect" && e.RemoteAddr != "" {
+		portStr := ""
+		if e.RemotePort > 0 {
+			portStr = fmtPort(e.RemotePort)
+		}
+		behaviors = append(behaviors, "remote:"+obfuscateIP(e.RemoteAddr)+portStr)
+	}
+
+	if e.EventType == "open" || e.EventType == "openat" {
+		if e.FilePath != "" {
+			behaviors = append(behaviors, "file:"+e.FilePath)
+		}
 	}
 
 	if containsAny(img, []string{"nc", "netcat", "ncat", "socat"}) {
 		behaviors = append(behaviors, "network_tool")
+	}
+
+	if e.ParentGUID != "" {
+		behaviors = append(behaviors, "parent_guid:"+e.ParentGUID)
 	}
 
 	if cmd == "" && e.FilePath != "" {
@@ -247,6 +266,40 @@ func (s *ActionStore) Fetch(hostname string) []Action {
 	actions := s.actions[hostname]
 	delete(s.actions, hostname)
 	return actions
+}
+
+func fmtPort(port uint16) string {
+	if port == 80 || port == 443 {
+		return ":http"
+	}
+	if port == 22 {
+		return ":ssh"
+	}
+	if port == 53 {
+		return ":dns"
+	}
+	return ":" + itoaU16(port)
+}
+
+func itoaU16(n uint16) string {
+	if n == 0 {
+		return "0"
+	}
+	var buf [5]byte
+	i := len(buf)
+	for n > 0 {
+		i--
+		buf[i] = byte('0' + n%10)
+		n /= 10
+	}
+	return string(buf[i:])
+}
+
+func obfuscateIP(addr string) string {
+	if len(addr) >= 8 {
+		return addr[:min(8, len(addr))] + "..."
+	}
+	return addr
 }
 
 func joinNonEmpty(s []string, sep string) string {

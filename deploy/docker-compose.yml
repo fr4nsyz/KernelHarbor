@@ -1,0 +1,66 @@
+version: "3.9"
+
+services:
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.4
+    container_name: kh-elasticsearch
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms1g -Xmx1g"
+    ports:
+      - "9200:9200"
+    volumes:
+      - es_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: kh-ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    healthcheck:
+      test: ["CMD", "ollama", "list"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  analysis:
+    build:
+      context: ../cmd/analysis
+      dockerfile: ../../deploy/Dockerfile.analysis
+    container_name: kh-analysis
+    environment:
+      - ES_ADDRESSES=http://elasticsearch:9200
+      - OLLAMA_ADDRESS=http://ollama:11434
+      - OLLAMA_MODEL=qwen2.5:7b
+      - LLM_BACKEND=ollama
+      - LLM_THRESHOLD=0.6
+      - HTTP_ADDRESS=:8080
+      - GRPC_ADDRESS=:9090
+      - PROTOCOL=both
+    ports:
+      - "8080:8080"
+      - "9090:9090"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+
+volumes:
+  es_data:
+  ollama_data:

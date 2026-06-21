@@ -1,0 +1,11 @@
+FROM golang:1.25-alpine AS builder
+
+WORKDIR /build
+COPY cmd/analysis/ .
+RUN go build -o analysis .
+
+FROM alpine:3.21
+RUN apk add --no-cache ca-certificates
+COPY --from=builder /build/analysis /usr/local/bin/analysis
+EXPOSE 8080 9090
+ENTRYPOINT ["analysis"]

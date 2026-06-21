@@ -1,0 +1,38 @@
+{
+  "id": "kernelharbor",
+  "name": "KernelHarbor",
+  "description": "Linux kernel security monitoring with eBPF, heuristic detection, and optional LLM analysis",
+  "activation": {
+    "onStartup": true
+  },
+  "contracts": {
+    "services": ["kernelharbor.sidecar"],
+    "httpRoutes": ["/kh/*"]
+  },
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "analysisAddr": {
+        "type": "string",
+        "default": "localhost:9090",
+        "description": "gRPC address for the KernelHarbor analysis service"
+      },
+      "dashboardPort": {
+        "type": "number",
+        "default": 8181,
+        "description": "Port for the KernelHarbor dashboard"
+      },
+      "autoStart": {
+        "type": "boolean",
+        "default": true,
+        "description": "Auto-start the KernelHarbor sidecar on gateway startup"
+      },
+      "binaryDir": {
+        "type": "string",
+        "default": "",
+        "description": "Directory containing pre-built agent and analysis binaries (empty = use bundled)"
+      }
+    },
+    "additionalProperties": false
+  }
+}

@@ -12,6 +12,7 @@ import (
 
 	"google.golang.org/grpc"
 
+	"KernelHarbor/cmd/analysis/internal/llm"
 	pb "KernelHarbor/cmd/analysis/pb"
 )
 
@@ -131,7 +132,7 @@ func (h *grpcHandler) Analyze(ctx context.Context, req *pb.AnalysisRequest) (*pb
 		query = "ls"
 	}
 
-	if ollamaClient == nil {
+	if llmBackend == nil || llmBackend.Name() == "none" {
 		verdict := "benign"
 		confidence := float32(0.5)
 		if hasSuspiciousPattern(query) {
@@ -141,16 +142,24 @@ func (h *grpcHandler) Analyze(ctx context.Context, req *pb.AnalysisRequest) (*pb
 		return &pb.AnalysisResponse{
 			Verdict:    verdict,
 			Confidence: confidence,
-			Summary:    fmt.Sprintf("Regex-only analysis (Ollama unavailable): %s", query),
+			Summary:    fmt.Sprintf("Regex-only analysis (LLM unavailable): %s", query),
 		}, nil
 	}
 
-	prompt := "Analyze this security event: " + query + "\nIs this malicious? Answer in JSON format: {\"verdict\": \"benign|suspicious|malicious\", \"confidence\": 0.0-1.0, \"summary\": \"brief explanation\"}"
-	log.Printf("gRPC Analyze prompt: %s", prompt)
+	evt := Event{
+		HostName:    req.HostName,
+		EventType:   "analyze",
+		CommandLine: query,
+	}
 
-	response, err := ollamaClient.Generate(ctx, prompt)
+	analysisReq := llm.AnalysisRequest{
+		Events:   []llm.EventLike{grpcEventLike{evt}},
+		HostName: req.HostName,
+	}
+
+	result, err := llmBackend.Analyze(analysisReq)
 	if err != nil {
-		log.Printf("Ollama generation failed: %v", err)
+		log.Printf("LLM analysis failed: %v", err)
 		verdict := "benign"
 		confidence := float32(0.3)
 		if hasSuspiciousPattern(query) {
@@ -160,19 +169,31 @@ func (h *grpcHandler) Analyze(ctx context.Context, req *pb.AnalysisRequest) (*pb
 		return &pb.AnalysisResponse{
 			Verdict:    verdict,
 			Confidence: confidence,
-			Summary:    fmt.Sprintf("Ollama failed, regex fallback: %s", query),
+			Summary:    fmt.Sprintf("LLM failed, regex fallback: %s", query),
 		}, nil
 	}
 
-	verdict, confidenceFloat64, evidence, summary, _ := parseAnalysisResponse(response)
-
 	return &pb.AnalysisResponse{
-		Verdict:    verdict,
-		Confidence: float32(confidenceFloat64),
-		Summary:    summary,
-		Evidence:   evidence,
+		Verdict:    result.Verdict,
+		Confidence: float32(result.Confidence),
+		Summary:    result.Summary,
+		Evidence:   result.Evidence,
 	}, nil
 }
+
+type grpcEventLike struct {
+	event Event
+}
+
+func (e grpcEventLike) GetEventType() string   { return e.event.EventType }
+func (e grpcEventLike) GetCommandLine() string { return e.event.CommandLine }
+func (e grpcEventLike) GetImagePath() string   { return e.event.ImagePath }
+func (e grpcEventLike) GetRemoteAddr() string  { return e.event.RemoteAddr }
+func (e grpcEventLike) GetRemotePort() uint16  { return e.event.RemotePort }
+func (e grpcEventLike) GetProcessID() uint32   { return e.event.ProcessID }
+func (e grpcEventLike) GetParentGUID() string  { return e.event.ParentGUID }
+func (e grpcEventLike) GetHostName() string    { return e.event.HostName }
+func (e grpcEventLike) GetFilePath() string    { return e.event.FilePath }
 
 var suspiciousPatterns = []string{
 	`curl\s+[^\s]+\s*\|`,

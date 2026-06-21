@@ -1,0 +1,65 @@
+services:
+  # KernelHarbor analysis service (heuristic + optional LLM)
+  analysis:
+    image: kernelharbor/analysis:latest
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile.analysis
+    ports:
+      - "9090:9090"
+      - "8080:8080"
+    environment:
+      GRPC_ADDRESS: ":9090"
+      HTTP_ADDRESS: ":8080"
+      PROTOCOL: "both"
+      ES_ADDRESSES: "${ES_ADDRESSES:-http://elasticsearch:9200}"
+      LLM_BACKEND: "${KH_LLM_BACKEND:-none}"
+      LLM_THRESHOLD: "${LLM_THRESHOLD:-0.6}"
+      OLLAMA_ADDRESS: "${OLLAMA_ADDRESS:-http://ollama:11434}"
+      OLLAMA_MODEL: "${OLLAMA_MODEL:-qwen2.5:7b}"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - kernelharbor
+
+  # Elasticsearch for event persistence
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.17.4
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9200/_cluster/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    volumes:
+      - es-data:/usr/share/elasticsearch/data
+    networks:
+      - kernelharbor
+    restart: unless-stopped
+
+  # Ollama for local LLM analysis (optional)
+  ollama:
+    image: ollama/ollama:latest
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-data:/root/.ollama
+    networks:
+      - kernelharbor
+    restart: unless-stopped
+    profiles:
+      - llm
+
+volumes:
+  es-data:
+  ollama-data:
+
+networks:
+  kernelharbor:

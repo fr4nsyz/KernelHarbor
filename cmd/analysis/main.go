@@ -145,6 +145,21 @@ func main() {
 	router.Use(gin.Logger())
 	router.Use(gin.Recovery())
 
+	httpAuthToken := os.Getenv("GRPC_AUTH_TOKEN")
+	if httpAuthToken != "" {
+		router.Use(func(c *gin.Context) {
+			if c.Request.URL.Path == "/health" || c.Request.URL.Path == "/ready" {
+				c.Next()
+				return
+			}
+			if c.Request.Header.Get("Authorization") != "Bearer "+httpAuthToken {
+				c.AbortWithStatusJSON(http.StatusUnauthorized, gin.H{"error": "unauthorized"})
+				return
+			}
+			c.Next()
+		})
+	}
+
 	router.GET("/health", func(c *gin.Context) {
 		c.JSON(http.StatusOK, gin.H{
 			"status":   "ok",

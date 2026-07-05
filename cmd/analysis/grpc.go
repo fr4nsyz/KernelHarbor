@@ -5,12 +5,16 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
 	"regexp"
 	"strconv"
 	"sync"
 	"time"
 
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 
 	pb "KernelHarbor/cmd/analysis/pb"
 )
@@ -18,7 +22,26 @@ import (
 var (
 	grpcServer           *grpc.Server
 	autoAnalyzeByDefault = true
+	grpcAuthToken        = os.Getenv("GRPC_AUTH_TOKEN")
 )
+
+func authUnaryInterceptor(ctx context.Context, req interface{}, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (interface{}, error) {
+	if grpcAuthToken == "" {
+		return handler(ctx, req)
+	}
+	md, ok := metadata.FromIncomingContext(ctx)
+	if !ok {
+		return nil, status.Error(codes.Unauthenticated, "missing metadata")
+	}
+	tokens := md.Get("authorization")
+	if len(tokens) == 0 {
+		return nil, status.Error(codes.Unauthenticated, "missing authorization token")
+	}
+	if tokens[0] != "Bearer "+grpcAuthToken {
+		return nil, status.Error(codes.Unauthenticated, "invalid authorization token")
+	}
+	return handler(ctx, req)
+}
 
 func startGrpcServer(addr string, wg *sync.WaitGroup) {
 	defer wg.Done()
@@ -28,7 +51,7 @@ func startGrpcServer(addr string, wg *sync.WaitGroup) {
 		log.Fatalf("failed to listen: %v", err)
 	}
 
-	grpcServer = grpc.NewServer()
+	grpcServer = grpc.NewServer(grpc.UnaryInterceptor(authUnaryInterceptor))
 	pb.RegisterAgentServiceServer(grpcServer, &grpcHandler{})
 
 	log.Printf("gRPC server listening on %s", addr)

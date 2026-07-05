@@ -44,6 +44,7 @@ const (
 var (
 	grpcAddr   = os.Getenv("GRPC_ADDRESS")
 	httpAddr   = os.Getenv("HTTP_ADDRESS")
+	authToken  = os.Getenv("GRPC_AUTH_TOKEN")
 	hostName   = getHostName()
 	agentPID   = uint32(os.Getpid())
 	grpcConn   *grpc.ClientConn
@@ -53,6 +54,18 @@ var (
 	grpcClosed atomic.Bool
 	httpClient *http.Client
 )
+
+type tokenAuth struct {
+	token string
+}
+
+func (t tokenAuth) GetRequestMetadata(ctx context.Context, uri ...string) (map[string]string, error) {
+	return map[string]string{"authorization": "Bearer " + t.token}, nil
+}
+
+func (tokenAuth) RequireTransportSecurity() bool {
+	return false
+}
 
 func getHostName() string {
 	h, err := os.Hostname()
@@ -310,6 +323,9 @@ func sendViaHTTP(events []UnifiedEvent) {
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if authToken != "" {
+		req.Header.Set("Authorization", "Bearer "+authToken)
+	}
 
 	resp, err := httpClient.Do(req)
 	if err != nil {
@@ -836,7 +852,10 @@ func fetchActionsLoop() {
 func grpcReconnectLoop() {
 	delay := initialReconnectDelay
 	for {
-		conn, err := grpc.NewClient(grpcAddr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+		conn, err := grpc.NewClient(grpcAddr,
+			grpc.WithTransportCredentials(insecure.NewCredentials()),
+			grpc.WithPerRPCCredentials(tokenAuth{token: authToken}),
+		)
 		if err != nil {
 			log.Printf("gRPC connection failed: %v", err)
 			time.Sleep(delay)

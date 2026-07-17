@@ -6,10 +6,13 @@ import (
 )
 
 const (
-	EventTypeExecve  = "execve"
-	EventTypeOpen    = "open"
-	EventTypeProcess = "process"
-	EventTypeNetwork = "network"
+	EventTypeExecve   = "execve"
+	EventTypeExecveat = "execveat"
+	EventTypeOpen     = "open"
+	EventTypeOpenat   = "openat"
+	EventTypeProcess  = "process"
+	EventTypeNetwork  = "network"
+	EventTypeConnect  = "connect"
 )
 
 type Event struct {

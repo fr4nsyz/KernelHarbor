@@ -34,7 +34,7 @@ struct connect_event {
 	u8 local_ip_len;
 	u8 local_ip[16];
 	u16 local_port;
-};
+} __attribute__((packed));
 
 SEC("tracepoint/syscalls/sys_enter_connect")
 

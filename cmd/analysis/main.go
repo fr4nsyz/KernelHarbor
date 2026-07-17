@@ -5,13 +5,11 @@ import (
 	"crypto/rand"
 	"encoding/json"
 	"flag"
-	"fmt"
 	"log"
 	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
-	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -191,6 +189,7 @@ func main() {
 			return
 		}
 
+		var allActions []Action
 		for i := range events {
 			if events[i].Timestamp.IsZero() {
 				events[i].Timestamp = time.Now()
@@ -199,38 +198,18 @@ func main() {
 				events[i].EventID = generateEventID()
 			}
 
-			query := events[i].CommandLine
-			if query == "" {
-				query = events[i].FilePath
-			}
-			if query == "" {
-				query = events[i].RemoteAddr
-			}
+			actions := processEvent(&events[i])
+			allActions = append(allActions, actions...)
 
-			verdict := "benign"
-			confidence := float32(0.0)
-
-			if autoAnalyzeByDefault && query != "" {
-				if hasSuspiciousPattern(query) {
-					verdict = "suspicious"
-					confidence = 0.7
-					actionStore.Add(events[i].HostName, Action{
-						ID:         generateEventID(),
-						Timestamp:  time.Now(),
-						HostName:   events[i].HostName,
-						ActionType: ActionKillPID,
-						Target:     strconv.Itoa(int(events[i].ProcessID)),
-						Reason:     fmt.Sprintf("Heuristic match: %s", query),
-					})
-				} else {
-					confidence = 0.3
-				}
-			}
-
-			log.Printf("Received event: %s [%s] PID=%d CMD=%s | VERDICT=%s CONFIDENCE=%.2f",
-				events[i].EventType, events[i].EventID, events[i].ProcessID, events[i].CommandLine, verdict, confidence)
+			log.Printf("Received event: %s [%s] PID=%d CMD=%s FILE=%s ADDR=%s:%d",
+				events[i].EventType, events[i].EventID, events[i].ProcessID,
+				events[i].CommandLine, events[i].FilePath, events[i].RemoteAddr, events[i].RemotePort)
 
 			processor.Submit(events[i])
+		}
+
+		for _, a := range allActions {
+			actionStore.Add(a.HostName, a)
 		}
 
 		if esClientInstance != nil {
@@ -278,6 +257,7 @@ func main() {
 			batch.ReceivedAt = time.Now()
 		}
 
+		var allActions []Action
 		for i := range batch.Events {
 			if batch.Events[i].Timestamp.IsZero() {
 				batch.Events[i].Timestamp = batch.ReceivedAt
@@ -289,26 +269,14 @@ func main() {
 				batch.Events[i].HostName = batch.HostName
 			}
 
-			query := batch.Events[i].CommandLine
-			if query == "" {
-				query = batch.Events[i].FilePath
-			}
-			if query == "" {
-				query = batch.Events[i].RemoteAddr
-			}
-
-			if autoAnalyzeByDefault && query != "" && hasSuspiciousPattern(query) {
-				actionStore.Add(batch.Events[i].HostName, Action{
-					ID:         generateEventID(),
-					Timestamp:  time.Now(),
-					HostName:   batch.Events[i].HostName,
-					ActionType: ActionKillPID,
-					Target:     strconv.Itoa(int(batch.Events[i].ProcessID)),
-					Reason:     fmt.Sprintf("Heuristic match: %s", query),
-				})
-			}
+			actions := processEvent(&batch.Events[i])
+			allActions = append(allActions, actions...)
 
 			processor.Submit(batch.Events[i])
+		}
+
+		for _, a := range allActions {
+			actionStore.Add(a.HostName, a)
 		}
 
 		if esClientInstance != nil {

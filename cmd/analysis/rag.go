@@ -149,7 +149,7 @@ var ollamaClient *OllamaClient
 var processor *BatchProcessor
 var actionStore = NewActionStore()
 
-func buildAnalysisPrompt(events []Event, similarEvents []Event, processChains map[string][]Event) string {
+func buildAnalysisPrompt(events []Event, similarEvents []Event, processChains map[string][]Event, correlationChains []*CorrelationChain) string {
 	var prompt bytes.Buffer
 
 	prompt.WriteString("You are a security analyst analyzing process execution telemetry. ")
@@ -203,6 +203,37 @@ func buildAnalysisPrompt(events []Event, similarEvents []Event, processChains ma
 				truncate(e.ImagePath, 30),
 				truncate(e.CommandLine, 40),
 			))
+		}
+	}
+
+	if len(correlationChains) > 0 {
+		prompt.WriteString("\n## Detected Correlation Chains\n")
+		prompt.WriteString("The following event chains have been detected by the correlation engine as suspicious multi-step attack patterns.\n")
+		prompt.WriteString("Use this information to inform your analysis — these chains indicate coordinated activity, not just isolated events.\n\n")
+		for _, chain := range correlationChains {
+			prompt.WriteString(fmt.Sprintf("**Chain: %s** (score: %.2f, verdict: %s)\n",
+				strings.Join(chain.ChainDesc, ", "), chain.Score, chain.Verdict))
+			prompt.WriteString(fmt.Sprintf("Process GUID: %s\n", chain.ProcessGUID))
+			for _, ev := range chain.Evidence {
+				prompt.WriteString(fmt.Sprintf("- %s\n", ev))
+			}
+			prompt.WriteString("| Timestamp | Type | Image | Command Line | File | Remote |\n")
+			prompt.WriteString("|-----------|------|-------|--------------|------|--------|\n")
+			for _, e := range chain.Events {
+				remote := ""
+				if e.RemoteAddr != "" {
+					remote = fmt.Sprintf("%s:%d", e.RemoteAddr, e.RemotePort)
+				}
+				prompt.WriteString(fmt.Sprintf("| %s | %s | %s | %s | %s | %s |\n",
+					e.Timestamp.Format(time.RFC3339),
+					e.EventType,
+					truncate(e.ImagePath, 25),
+					truncate(e.CommandLine, 35),
+					truncate(e.FilePath, 20),
+					remote,
+				))
+			}
+			prompt.WriteString("\n")
 		}
 	}
 

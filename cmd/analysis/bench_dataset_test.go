@@ -292,5 +292,141 @@ func benchDataset() []LabeledEvent {
 		})
 	}
 
+	benignOpen := []struct {
+		path  string
+		flags string
+	}{
+		{"/home/user/documents/report.pdf", "O_RDONLY"},
+		{"/opt/app/config/settings.yaml", "O_RDONLY"},
+		{"/var/log/nginx/access.log", "O_RDONLY"},
+		{"/home/user/.bashrc", "O_RDONLY"},
+		{"/etc/hostname", "O_RDONLY"},
+		{"/proc/cpuinfo", "O_RDONLY"},
+	}
+
+	for _, b := range benignOpen {
+		id := nextBenchID()
+		dataset = append(dataset, LabeledEvent{
+			Event: Event{
+				Timestamp:   time.Now(),
+				HostName:    "bench-host",
+				EventType:   "open",
+				EventID:     "bench-benign-open-" + id,
+				ProcessGUID: "bench-host-4000-" + id,
+				ParentGUID:  "bench-host-1-" + id,
+				ProcessID:   4000,
+				ParentPID:   1,
+				FilePath:    b.path,
+				FileFlags:   b.flags,
+				User:        "user",
+			},
+			ExpectedVerdict:    "benign",
+			ExpectedSuspicious: false,
+		})
+	}
+
+	suspiciousOpen := []struct {
+		path  string
+		flags string
+	}{
+		{"/etc/shadow", "O_RDONLY"},
+		{"/etc/passwd", "O_RDONLY"},
+		{"/etc/shadow", "O_WRONLY"},
+		{"/etc/passwd", "O_WRONLY"},
+		{"/home/user/.ssh/authorized_keys", "O_WRONLY|O_CREAT"},
+		{"/etc/sudoers", "O_RDWR"},
+		{"/etc/crontab", "O_WRONLY"},
+		{"/var/log/auth.log", "O_WRONLY"},
+		{"/tmp/malware.sh", "O_WRONLY|O_CREAT"},
+		{"/etc/ssh/sshd_config", "O_RDWR"},
+	}
+
+	for _, s := range suspiciousOpen {
+		id := nextBenchID()
+		dataset = append(dataset, LabeledEvent{
+			Event: Event{
+				Timestamp:   time.Now(),
+				HostName:    "bench-host",
+				EventType:   "open",
+				EventID:     "bench-susp-open-" + id,
+				ProcessGUID: "bench-host-5000-" + id,
+				ParentGUID:  "bench-host-4000-" + id,
+				ProcessID:   5000,
+				ParentPID:   4000,
+				FilePath:    s.path,
+				FileFlags:   s.flags,
+				User:        "user",
+			},
+			ExpectedVerdict:    "suspicious",
+			ExpectedSuspicious: true,
+		})
+	}
+
+	benignConnect := []struct {
+		addr string
+		port uint16
+	}{
+		{"93.184.216.34", 80},
+		{"142.250.80.46", 443},
+		{"10.0.0.1", 22},
+		{"10.0.0.1", 5432},
+		{"10.0.0.1", 3306},
+		{"10.0.0.1", 8080},
+	}
+
+	for _, b := range benignConnect {
+		id := nextBenchID()
+		dataset = append(dataset, LabeledEvent{
+			Event: Event{
+				Timestamp:   time.Now(),
+				HostName:    "bench-host",
+				EventType:   "connect",
+				EventID:     "bench-benign-conn-" + id,
+				ProcessGUID: "bench-host-6000-" + id,
+				ParentGUID:  "bench-host-1-" + id,
+				ProcessID:   6000,
+				ParentPID:   1,
+				RemoteAddr:  b.addr,
+				RemotePort:  b.port,
+				User:        "user",
+			},
+			ExpectedVerdict:    "benign",
+			ExpectedSuspicious: false,
+		})
+	}
+
+	suspiciousConnect := []struct {
+		addr string
+		port uint16
+	}{
+		{"10.0.0.1", 4444},
+		{"10.0.0.1", 5555},
+		{"10.0.0.1", 6666},
+		{"10.0.0.1", 31337},
+		{"10.0.0.1", 12345},
+		{"10.0.0.1", 9999},
+	}
+
+	for _, s := range suspiciousConnect {
+		id := nextBenchID()
+		dataset = append(dataset, LabeledEvent{
+			Event: Event{
+				Timestamp:   time.Now(),
+				HostName:    "bench-host",
+				EventType:   "connect",
+				EventID:     "bench-susp-conn-" + id,
+				ProcessGUID: "bench-host-7000-" + id,
+				ParentGUID:  "bench-host-1-" + id,
+				ProcessID:   7000,
+				ParentPID:   1,
+				RemoteAddr:  s.addr,
+				RemotePort:  s.port,
+				User:        "user",
+			},
+			ExpectedVerdict:    "suspicious",
+			ExpectedSuspicious: true,
+		})
+	}
+
 	return dataset
 }

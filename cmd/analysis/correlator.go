@@ -103,9 +103,12 @@ var defaultChainRules = []chainRule{
 					execImage = extractBinaryName(e.ImagePath)
 				}
 				if e.EventType == EventTypeNetwork || e.EventType == "connect" {
-					if _, ok := suspiciousPorts[e.RemotePort]; ok {
-						hasSuspiciousConn = true
-						connPort = fmt.Sprintf("%d", e.RemotePort)
+					for _, rule := range DefaultRules.NetworkRules {
+						if rule.Port == e.RemotePort {
+							hasSuspiciousConn = true
+							connPort = fmt.Sprintf("%d", e.RemotePort)
+							break
+						}
 					}
 				}
 			}
@@ -365,8 +368,8 @@ func isSensitiveWrite(e Event) bool {
 		!strings.Contains(e.FileFlags, "O_CREAT") {
 		return false
 	}
-	for _, re := range sensitiveFileRegexps {
-		if re.MatchString(e.FilePath) {
+	for _, rule := range DefaultRules.FileRules {
+		if rule.IsWrite && rule.Pattern.MatchString(e.FilePath) {
 			return true
 		}
 	}

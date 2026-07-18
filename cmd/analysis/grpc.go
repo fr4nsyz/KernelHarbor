@@ -6,7 +6,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"regexp"
 	"strconv"
 	"sync"
 	"time"
@@ -176,99 +175,17 @@ func (h *grpcHandler) Analyze(ctx context.Context, req *pb.AnalysisRequest) (*pb
 	}, nil
 }
 
-var suspiciousPatterns = []string{
-	`curl\s+[^\s]+\s*\|`,
-	`curl\s+[^\s]+\s*>\s*/`,
-	`curl\s+-[dTk]`,
-	`curl\s+-[A-Z]-[dTk]`,
-	`curl\s+-[sS].*http://[^\s]+`,
-	`curl\s+-X\s+(DELETE|PUT|PATCH)`,
-	`curl\s+--post-data`,
-	`curl\s+--no-check-certificate`,
-	`curl\s+--connect-timeout\s+\d+\s+http://`,
-	`wget\s+-[OQA]`,
-	`wget\s+[^\s]+\s+-[OQA]`,
-	`wget\s+[^\s]+\s*\|`,
-	`wget\s+[^\s]+\s*>\s*/`,
-	`wget\s+--post-data`,
-	`wget\s+--no-check-certificate`,
-	`(ba)?sh\s+-c\s+`,
-	`/bin/(ba)?sh\s+-c`,
-	`bash\s+-i`,
-	`sh\s+-i`,
-	`nc\s+-[lveuzwp]`,
-	`nc\s+-[^\s]*\s+.*-[eEpP]`,
-	`nc\s+\S+\s+\d+\s+-[eEpP]`,
-	`nc\s+[0-9]`,
-	`ncat\s+`,
-	`netcat\s+`,
-	`socat\s+`,
-	`base64\s+-d`,
-	`powershell`,
-	`python.*socket`,
-	`python.*subprocess`,
-	`python.*pty`,
-	`python.*os\.(listdir|system|popen|exec|remove|unlink|rmdir|rename)`,
-	`perl\s+-e\s+`,
-	`ruby\s+-e\s+`,
-	`php\s+-r\s+`,
-	`/dev/tcp`,
-	`/dev/udp`,
-}
-
-var dangerousExtensions = []string{`\b\S+\.sh\b`, `\.bash$`, `\.ps1$`}
-
-var compiledSuspicious []*regexp.Regexp
-var compiledExtensions []*regexp.Regexp
-var compiledBenignPatterns []*regexp.Regexp
-
-func init() {
-	for _, p := range suspiciousPatterns {
-		compiledSuspicious = append(compiledSuspicious, regexp.MustCompile(p))
-	}
-	for _, p := range dangerousExtensions {
-		compiledExtensions = append(compiledExtensions, regexp.MustCompile(p))
-	}
-	benignShPatterns := []string{
-		`chmod\s+`, `ls\s+`, `cat\s+`, `grep\s+`,
-		`head\s+`, `tail\s+`, `diff\s+`, `vim\s+`,
-		`nano\s+`, `less\s+`, `more\s+`, `wc\s+`,
-		`file\s+`, `stat\s+`, `test\s+`,
-	}
-	for _, p := range benignShPatterns {
-		compiledBenignPatterns = append(compiledBenignPatterns, regexp.MustCompile(p))
-	}
-}
-
 func hasSuspiciousPattern(cmd string) bool {
 	if cmd == "" {
 		return false
 	}
 
-	for _, re := range compiledSuspicious {
-		if re.MatchString(cmd) {
+	for _, rule := range DefaultRules.CommandRules {
+		if rule.Pattern.MatchString(cmd) {
 			return true
 		}
 	}
 
-	for i, re := range compiledExtensions {
-		if re.MatchString(cmd) {
-			if dangerousExtensions[i] == `\b\S+\.sh\b` && isBenignShRef(cmd) {
-				continue
-			}
-			return true
-		}
-	}
-
-	return false
-}
-
-func isBenignShRef(cmd string) bool {
-	for _, re := range compiledBenignPatterns {
-		if re.MatchString(cmd) {
-			return true
-		}
-	}
 	return false
 }
 

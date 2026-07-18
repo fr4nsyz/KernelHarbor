@@ -6,10 +6,13 @@ import (
 )
 
 const (
-	EventTypeExecve  = "execve"
-	EventTypeOpen    = "open"
-	EventTypeProcess = "process"
-	EventTypeNetwork = "network"
+	EventTypeExecve   = "execve"
+	EventTypeExecveat = "execveat"
+	EventTypeOpen     = "open"
+	EventTypeOpenat   = "openat"
+	EventTypeProcess  = "process"
+	EventTypeNetwork  = "network"
+	EventTypeConnect  = "connect"
 )
 
 type Event struct {
@@ -215,6 +218,7 @@ type ActionType string
 const (
 	ActionKillPID ActionType = "KILL_PID"
 	ActionBlockIP ActionType = "BLOCK_IP"
+	ActionAlert   ActionType = "ALERT"
 )
 
 type Action struct {

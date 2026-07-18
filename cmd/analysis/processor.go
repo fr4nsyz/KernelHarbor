@@ -242,10 +242,23 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 		}
 	}
 
-	// 4. Build analysis prompt
-	prompt := buildAnalysisPrompt(batch.Events, similarEvents, processChains)
+	// 4. Evaluate correlation chains for batch events
+	var correlationChains []*CorrelationChain
+	seenGUIDs2 := map[string]bool{}
+	for _, e := range batch.Events {
+		if e.ProcessGUID == "" || seenGUIDs2[e.ProcessGUID] {
+			continue
+		}
+		seenGUIDs2[e.ProcessGUID] = true
+		if chain := correlator.Evaluate(e.ProcessGUID); chain != nil {
+			correlationChains = append(correlationChains, chain)
+		}
+	}
 
-	// 4. Run AI analysis
+	// 5. Build analysis prompt
+	prompt := buildAnalysisPrompt(batch.Events, similarEvents, processChains, correlationChains)
+
+	// 6. Run AI analysis
 	if ollamaClient != nil {
 		response, err := ollamaClient.Generate(ctx, prompt)
 		if err != nil {

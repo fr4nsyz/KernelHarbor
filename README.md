@@ -7,7 +7,7 @@ Credits:
 | Person | Details |
 |-----------|-------------|
 | [Kien Do -- Security Engineer @ Trend Micro](https://github.com/kienmarkdo) | Guided the team on how production-grade EDRs work. |
-| [Francois Coleongco (Me) -- SWE Intern @ IBM](https://github.com/fr4nsyz) | Detection & Response Engine, `execve` / `execveat` syscall monitoring. |
+| [Francois Coleongco (Me) -- SWE @ IBM](https://github.com/fr4nsyz) | Detection & Response Engine, `execve` / `execveat` syscall monitoring. |
 | [John Tyler -- GPU Programmer @ AMD](https://github.com/john00003) | `open` / `openat` syscall monitoring. |
 | [Mehar Klair -- Incident Response @ KPMG](https://github.com/meharklair) | `connect` syscall monitoring. |
 

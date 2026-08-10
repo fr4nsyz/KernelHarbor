@@ -84,9 +84,13 @@ func TestDetectionAccuracy(t *testing.T) {
 	dataset := benchDataset()
 
 	var tp, fp, tn, fn int
+	missedReasons := map[string]int{}
 
 	for _, le := range dataset {
-		predicted := hasSuspiciousPattern(le.Event.CommandLine)
+		// Run the full heuristic pipeline for the event's type (command,
+		// file, or network) rather than only the command-line pattern.
+		res := evaluateHeuristic(le.Event, processCache)
+		predicted := res.Matched
 		actual := le.ExpectedSuspicious
 
 		switch {
@@ -96,6 +100,7 @@ func TestDetectionAccuracy(t *testing.T) {
 			fp++
 		case !predicted && actual:
 			fn++
+			missedReasons[le.Event.EventType+": "+le.Event.CommandLine+le.Event.FilePath]++
 		case !predicted && !actual:
 			tn++
 		}
@@ -134,6 +139,10 @@ func TestDetectionAccuracy(t *testing.T) {
 	t.Logf("Recall:      %.2f%%", recall*100)
 	t.Logf("F1 Score:    %.2f%%", f1*100)
 	t.Logf("FP Rate:     %.2f%%", fpRate*100)
+
+	for miss, n := range missedReasons {
+		t.Logf("Missed (%d): %s", n, miss)
+	}
 
 	if fpRate > 0.15 {
 		t.Errorf("False positive rate %.2f%% exceeds 15%% threshold", fpRate*100)

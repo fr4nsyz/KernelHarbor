@@ -51,6 +51,8 @@ int handle_connect(struct trace_event_raw_sys_enter *ctx) {
 	e = bpf_ringbuf_reserve(&events, sizeof(*e), 0);
 	if (!e) return 0;
 
+	zero_event(e, sizeof(*e));
+
 	read_process_info(&e->proc);
 
 	e->fd = ctx->args[0];

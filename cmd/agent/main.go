@@ -100,12 +100,12 @@ type UnifiedEvent struct {
 
 	FilePath  string `json:"file.path,omitempty"`
 	Flags     int32  `json:"flags,omitempty"`
-	FlagsDesc string `json:"flags.desc,omitempty"`
-	Mode      uint32 `json:"mode,omitempty"`
+	FlagsDesc string `json:"file.flags,omitempty"`
+	Mode      uint32 `json:"file.mode,omitempty"`
 
-	RemoteAddr string `json:"remote.addr,omitempty"`
+	RemoteAddr string `json:"remote.address,omitempty"`
 	RemotePort uint16 `json:"remote.port,omitempty"`
-	LocalAddr  string `json:"local.addr,omitempty"`
+	LocalAddr  string `json:"local.address,omitempty"`
 	LocalPort  uint16 `json:"local.port,omitempty"`
 }
 
@@ -157,20 +157,30 @@ type EventBatch struct {
 }
 
 type Batcher struct {
-	mu      sync.Mutex
-	events  []UnifiedEvent
-	timer   *time.Timer
-	flushCh chan []UnifiedEvent
-	stopCh  chan struct{}
+	mu        sync.Mutex
+	events    []UnifiedEvent
+	timer     *time.Timer
+	flushCh   chan []UnifiedEvent
+	stopCh    chan struct{}
+	send      func([]UnifiedEvent)
+	maxEvents int
+	interval  time.Duration
 }
 
 func NewBatcher() *Batcher {
+	return newBatcherWithSend(sendBatch, batchInterval, batchMaxEvents)
+}
+
+func newBatcherWithSend(send func([]UnifiedEvent), interval time.Duration, maxEvents int) *Batcher {
 	b := &Batcher{
-		events:  make([]UnifiedEvent, 0, batchMaxEvents),
-		flushCh: make(chan []UnifiedEvent, 4096),
-		stopCh:  make(chan struct{}),
+		events:    make([]UnifiedEvent, 0, maxEvents),
+		flushCh:   make(chan []UnifiedEvent, 4096),
+		stopCh:    make(chan struct{}),
+		send:      send,
+		maxEvents: maxEvents,
+		interval:  interval,
 	}
-	b.timer = time.AfterFunc(batchInterval, b.timerFlush)
+	b.timer = time.AfterFunc(interval, b.timerFlush)
 	b.timer.Stop()
 	go b.run()
 	return b
@@ -179,10 +189,10 @@ func NewBatcher() *Batcher {
 func (b *Batcher) Add(event UnifiedEvent) {
 	b.mu.Lock()
 	b.events = append(b.events, event)
-	if len(b.events) >= batchMaxEvents {
+	if len(b.events) >= b.maxEvents {
 		b.flushLocked()
 	} else if len(b.events) == 1 {
-		b.timer.Reset(batchInterval)
+		b.timer.Reset(b.interval)
 	}
 	b.mu.Unlock()
 }
@@ -212,7 +222,7 @@ func (b *Batcher) run() {
 	for {
 		select {
 		case batch := <-b.flushCh:
-			sendBatch(batch)
+			b.send(batch)
 		case <-b.stopCh:
 			b.mu.Lock()
 			b.flushLocked()
@@ -802,29 +812,127 @@ func executeActions(actions []*pb.Action) {
 	for _, a := range actions {
 		switch a.ActionType {
 		case "KILL_PID":
-			pid, err := strconv.Atoi(a.Target)
+			pid, startNs, err := parseKillTarget(a.Target)
 			if err != nil {
-				log.Printf("exec: invalid PID %q: %v", a.Target, err)
+				log.Printf("exec: invalid KILL target %q: %v", a.Target, err)
 				continue
 			}
 			if uint32(pid) == agentPID {
 				log.Printf("exec: refusing to kill self (PID=%d)", pid)
 				continue
 			}
+			if startNs > 0 {
+				actual, err := processStartTimeNs(pid)
+				if err != nil {
+					log.Printf("exec: cannot verify PID %d start time, skipping: %v", pid, err)
+					continue
+				}
+				tolerance := uint64(1 * time.Second)
+				if diff := absDiff64(actual, startNs); diff > tolerance {
+					log.Printf("exec: PID %d reused (expected start=%d, actual=%d), skipping", pid, startNs, actual)
+					continue
+				}
+			}
 			log.Printf("ACTION KILL_PID %d (reason: %s)", pid, a.Reason)
 			if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
 				log.Printf("ACTION KILL_PID %d failed: %v", pid, err)
 			}
 		case "BLOCK_IP":
-			log.Printf("ACTION BLOCK_IP %s (reason: %s)", a.Target, a.Reason)
-			cmd := exec.Command("iptables", "-A", "INPUT", "-s", a.Target, "-j", "DROP")
-			if out, err := cmd.CombinedOutput(); err != nil {
-				log.Printf("ACTION BLOCK_IP %s failed: %v, output: %s", a.Target, err, string(out))
+			ip := a.Target
+			if ip == "" {
+				log.Printf("exec: empty BLOCK_IP target")
+				continue
+			}
+			if _, ok := blockedIPs.Load(ip); ok {
+				log.Printf("ACTION BLOCK_IP %s already blocked, skipping (reason: %s)", ip, a.Reason)
+				continue
+			}
+			log.Printf("ACTION BLOCK_IP %s (reason: %s)", ip, a.Reason)
+			ok := true
+			for _, chain := range []string{"OUTPUT", "INPUT"} {
+				if iptablesRuleExists(chain, ip) {
+					log.Printf("ACTION BLOCK_IP %s: rule already present in %s", ip, chain)
+					continue
+				}
+				cmd := exec.Command("iptables", "-w", "5", "-A", chain, "-s", ip, "-j", "DROP")
+				if out, err := cmd.CombinedOutput(); err != nil {
+					log.Printf("ACTION BLOCK_IP %s failed on %s: %v, output: %s", ip, chain, err, string(out))
+					ok = false
+				}
+			}
+			if ok {
+				blockedIPs.Store(ip, true)
+			} else {
+				blockedIPs.Store(ip, true)
+				log.Printf("ACTION BLOCK_IP %s partially applied", ip)
 			}
 		default:
 			log.Printf("ACTION unknown type: %s", a.ActionType)
 		}
 	}
+}
+
+var blockedIPs sync.Map
+
+// parseKillTarget parses "<pid>@<start_ns>" (or a bare pid for legacy targets).
+func parseKillTarget(target string) (int, uint64, error) {
+	if idx := strings.IndexByte(target, '@'); idx >= 0 {
+		pid, err := strconv.Atoi(target[:idx])
+		if err != nil {
+			return 0, 0, err
+		}
+		startNs, err := strconv.ParseUint(target[idx+1:], 10, 64)
+		if err != nil {
+			return 0, 0, err
+		}
+		return pid, startNs, nil
+	}
+	pid, err := strconv.Atoi(target)
+	if err != nil {
+		return 0, 0, err
+	}
+	return pid, 0, nil
+}
+
+// processStartTimeNs reads field 22 (starttime, clock ticks since boot) from
+// /proc/<pid>/stat and converts it to nanoseconds.
+func processStartTimeNs(pid int) (uint64, error) {
+	data, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
+	if err != nil {
+		return 0, err
+	}
+	s := string(data)
+	end := strings.LastIndexByte(s, ')')
+	if end < 0 || end+2 > len(s) {
+		return 0, fmt.Errorf("malformed /proc/%d/stat", pid)
+	}
+	// Fields after ") " start at field 3 (state); starttime is field 22 -> index 19.
+	fields := strings.Fields(s[end+1:])
+	if len(fields) < 20 {
+		return 0, fmt.Errorf("short /proc/%d/stat", pid)
+	}
+	ticks, err := strconv.ParseUint(fields[19], 10, 64)
+	if err != nil {
+		return 0, err
+	}
+	return ticks * 1e9 / clkTck, nil
+}
+
+// clkTck mirrors sysconf(_SC_CLK_TCK). /proc/<pid>/stat starttime is always
+// expressed in USER_HZ units, a kernel constant of 100 independent of
+// CONFIG_HZ, so sysconf() returns 100 on every Linux build.
+var clkTck = uint64(100)
+
+func absDiff64(a, b uint64) uint64 {
+	if a > b {
+		return a - b
+	}
+	return b - a
+}
+
+func iptablesRuleExists(chain, ip string) bool {
+	err := exec.Command("iptables", "-w", "5", "-C", chain, "-s", ip, "-j", "DROP").Run()
+	return err == nil
 }
 
 func fetchActionsLoop() {

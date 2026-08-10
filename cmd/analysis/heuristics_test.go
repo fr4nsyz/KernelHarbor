@@ -145,7 +145,7 @@ func TestEvaluateFileHeuristic(t *testing.T) {
 				Timestamp: time.Now(),
 			},
 			wantMatched: true,
-			wantMinConf: 0.9,
+			wantMinConf: 0.4,
 		},
 		{
 			name: "read /etc/passwd",
@@ -158,7 +158,20 @@ func TestEvaluateFileHeuristic(t *testing.T) {
 				Timestamp: time.Now(),
 			},
 			wantMatched: true,
-			wantMinConf: 0.9,
+			wantMinConf: 0.4,
+		},
+		{
+			name: "write to /etc/passwd alerts only",
+			event: Event{
+				EventType: EventTypeOpen,
+				FilePath:  "/etc/passwd",
+				FileFlags: "O_WRONLY",
+				ProcessID: 100,
+				HostName:  "test",
+				Timestamp: time.Now(),
+			},
+			wantMatched: true,
+			wantMinConf: 0.4,
 		},
 		{
 			name: "write to ssh authorized_keys",
@@ -471,5 +484,136 @@ func TestIsTempPath(t *testing.T) {
 		if got := isTempPath(tt.path); got != tt.expected {
 			t.Errorf("isTempPath(%q) = %v, want %v", tt.path, got, tt.expected)
 		}
+	}
+}
+
+func TestFileRuleActionTypes(t *testing.T) {
+	tests := []struct {
+		name       string
+		path       string
+		flags      string
+		wantAction ActionType
+	}{
+		{"shadow read kills", "/etc/shadow", "O_RDONLY", ActionKillPID},
+		{"shadow write kills", "/etc/shadow", "O_WRONLY", ActionKillPID},
+		{"id_rsa read kills", "/root/.ssh/id_rsa", "O_RDONLY", ActionKillPID},
+		{"gnupg read kills", "/root/.gnupg/secring.gpg", "O_RDONLY", ActionKillPID},
+		{"passwd read alerts", "/etc/passwd", "O_RDONLY", ActionAlert},
+		{"passwd write alerts", "/etc/passwd", "O_WRONLY", ActionAlert},
+		{"sudoers write kills", "/etc/sudoers", "O_WRONLY", ActionKillPID},
+		{"authorized_keys write kills", "/home/u/.ssh/authorized_keys", "O_WRONLY|O_CREAT", ActionKillPID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := evaluateFileHeuristic(Event{
+				EventType: EventTypeOpen,
+				FilePath:  tt.path,
+				FileFlags: tt.flags,
+				ProcessID: 100,
+				HostName:  "test",
+				Timestamp: time.Now(),
+			}, nil)
+			if !result.Matched {
+				t.Fatalf("expected match for %s %s", tt.path, tt.flags)
+			}
+			found := false
+			for _, a := range result.Actions {
+				if a.ActionType == tt.wantAction {
+					found = true
+				}
+			}
+			if !found {
+				t.Errorf("expected an %s action for %s %s, got %+v", tt.wantAction, tt.path, tt.flags, result.Actions)
+			}
+		})
+	}
+}
+
+func TestServerParentConnectAlertsNotBlocks(t *testing.T) {
+	cache := NewProcessCache(100)
+	cache.Record(Event{
+		ProcessGUID: "host-php-fpm-1000",
+		ProcessID:   1000,
+		ImagePath:   "/usr/sbin/php-fpm",
+		HostName:    "test",
+		Timestamp:   time.Now(),
+	})
+
+	event := Event{
+		EventType:  EventTypeConnect,
+		ParentGUID: "host-php-fpm-1000",
+		RemoteAddr: "10.0.0.99",
+		RemotePort: 8080,
+		ProcessID:  2000,
+		HostName:   "test",
+		Timestamp:  time.Now(),
+	}
+
+	result := evaluateNetworkHeuristic(event, cache)
+	if !result.Matched {
+		t.Fatal("expected match for connection from server process")
+	}
+	for _, a := range result.Actions {
+		if a.ActionType == ActionBlockIP {
+			t.Errorf("server-process connect must not BLOCK_IP (bricks DHCP/cron/php-fpm), got %s", a.ActionType)
+		}
+	}
+}
+
+func TestNetworkRulePortStillBlocks(t *testing.T) {
+	event := Event{
+		EventType:  EventTypeConnect,
+		RemoteAddr: "10.0.0.1",
+		RemotePort: 4444,
+		ProcessID:  100,
+		HostName:   "test",
+		Timestamp:  time.Now(),
+	}
+	result := evaluateNetworkHeuristic(event, nil)
+	found := false
+	for _, a := range result.Actions {
+		if a.ActionType == ActionBlockIP && a.Target == "10.0.0.1" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("network-rule port match must BLOCK_IP, got %+v", result.Actions)
+	}
+}
+
+func TestParseGUIDStartTime(t *testing.T) {
+	tests := []struct {
+		name   string
+		guid   string
+		want   uint64
+		wantOK bool
+	}{
+		{"host with dashes", "my-host.local-1234-567890123", 567890123, true},
+		{"simple host", "bench-host-1234-567890", 567890, true},
+		{"no guid", "", 0, false},
+		{"empty start", "bench-host-1234-", 0, false},
+		{"non numeric start", "bench-host-1234-abc", 0, false},
+		{"bare pid", "1234", 0, false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := parseGUIDStartTime(tt.guid)
+			if got != tt.want || ok != tt.wantOK {
+				t.Errorf("parseGUIDStartTime(%q) = (%d, %v), want (%d, %v)", tt.guid, got, ok, tt.want, tt.wantOK)
+			}
+		})
+	}
+}
+
+func TestKillPIDTarget(t *testing.T) {
+	withGUID := Event{ProcessID: 42, ProcessGUID: "host-42-999999999"}
+	if got := killPIDTarget(withGUID); got != "42@999999999" {
+		t.Errorf("killPIDTarget(with GUID) = %q, want %q", got, "42@999999999")
+	}
+	noGUID := Event{ProcessID: 42}
+	if got := killPIDTarget(noGUID); got != "42" {
+		t.Errorf("killPIDTarget(no GUID) = %q, want %q", got, "42")
 	}
 }

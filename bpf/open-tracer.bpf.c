@@ -50,6 +50,8 @@ int handle_open(struct trace_event_raw_sys_enter *ctx) {
 	if (!e)
 		return 0;
 
+	zero_event(e, sizeof(*e));
+
 	read_process_info(&e->proc);
 
 	const char *filename = (const char *)ctx->args[0];

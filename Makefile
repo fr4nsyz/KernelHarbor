@@ -4,10 +4,28 @@ APPS     := agent analysis
 VMLINUX  := bpf/vmlinux.h
 BPF_HDRS := $(wildcard bpf/*.h)
 
-.PHONY: all build test clean $(TRACERS) $(APPS)
+PROTO_GEN := .proto-gen
+
+.PHONY: all build test clean proto $(TRACERS) $(APPS)
 
 all: build
 build: $(TRACERS) $(APPS)
+
+# --- proto ---
+# Regenerates cmd/agent/proto (package proto) and cmd/analysis/pb (package pb)
+# from proto/agent.proto. protoc-gen-go writes under the go_package path
+# (kernelharbor/proto/kernelharborpb), so copy the output to both modules and
+# rewrite the package clause to match each module's import path.
+proto:
+	rm -rf $(PROTO_GEN)
+	mkdir -p $(PROTO_GEN)
+	protoc --go_out=$(PROTO_GEN) --go-grpc_out=$(PROTO_GEN) proto/agent.proto
+	mkdir -p cmd/agent/proto cmd/analysis/pb
+	cp $(PROTO_GEN)/kernelharbor/proto/kernelharborpb/agent.pb.go $(PROTO_GEN)/kernelharbor/proto/kernelharborpb/agent_grpc.pb.go cmd/agent/proto/
+	cp $(PROTO_GEN)/kernelharbor/proto/kernelharborpb/agent.pb.go $(PROTO_GEN)/kernelharbor/proto/kernelharborpb/agent_grpc.pb.go cmd/analysis/pb/
+	sed -i 's/package kernelharborpb/package proto/' cmd/agent/proto/*.go
+	sed -i 's/package kernelharborpb/package pb/' cmd/analysis/pb/*.go
+	rm -rf $(PROTO_GEN)
 
 $(VMLINUX):
 	bpftool btf dump file /sys/kernel/btf/vmlinux format c > $@

@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"strconv"
 	"sync"
 	"time"
 )
@@ -216,9 +215,17 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 			similar, err := esClientInstance.VectorSearch(ctx, batch.HostName, "", emb, 5)
 			if err != nil {
 				log.Printf("Failed to search similar events: %v", err)
-				continue
+			} else {
+				similarEvents = append(similarEvents, similar...)
 			}
-			similarEvents = append(similarEvents, similar...)
+
+			// Persist the vector so later VectorSearch calls (and the
+			// baseline recommendation feature) can retrieve it.
+			if i < len(batch.Events) && batch.Events[i].EventID != "" {
+				if err := esClientInstance.UpdateEmbedding(ctx, batch.Events[i].EventID, emb); err != nil {
+					log.Printf("Failed to store embedding for event %s: %v", batch.Events[i].EventID, err)
+				}
+			}
 		}
 	}
 
@@ -266,7 +273,7 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 			return
 		}
 
-		verdict, confidence, evidence, summary, err := parseAnalysisResponse(response)
+		verdict, confidence, evidence, summary, maliciousEvents, err := parseAnalysisResponse(response)
 		if err != nil {
 			log.Printf("Failed to parse AI response: %v", err)
 			verdict = "unknown"
@@ -296,13 +303,35 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 			batch.HostName, verdict, confidence, summary)
 
 		if verdict == "malicious" && confidence >= 0.7 {
+			flagged := map[string]bool{}
+			for _, id := range maliciousEvents {
+				flagged[id] = true
+			}
 			for _, e := range batch.Events {
+				// Only act on events the model explicitly flagged. When it
+				// flagged none, fall back to events carrying a heuristic or
+				// correlation signal; everything else is escalated to an alert
+				// instead of a kill.
+				if len(flagged) > 0 && !flagged[e.EventID] {
+					continue
+				}
+				if len(flagged) == 0 && !hasHeuristicSignal(&e) {
+					actionStore.Add(batch.HostName, Action{
+						ID:         generateEventID(),
+						Timestamp:  time.Now(),
+						HostName:   batch.HostName,
+						ActionType: ActionAlert,
+						Target:     killPIDTarget(e),
+						Reason:     fmt.Sprintf("AI analysis flagged batch as malicious (%.2f) but no event ids: %s", confidence, summary),
+					})
+					continue
+				}
 				actionStore.Add(batch.HostName, Action{
 					ID:         generateEventID(),
 					Timestamp:  time.Now(),
 					HostName:   batch.HostName,
 					ActionType: ActionKillPID,
-					Target:     strconv.Itoa(int(e.ProcessID)),
+					Target:     killPIDTarget(e),
 					Reason:     fmt.Sprintf("AI analysis: %s (%.2f) - %s", verdict, confidence, summary),
 				})
 				if e.EventType == "connect" && e.RemoteAddr != "" {

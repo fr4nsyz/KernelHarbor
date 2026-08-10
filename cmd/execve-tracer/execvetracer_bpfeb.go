@@ -54,7 +54,8 @@ type execveTracerSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type execveTracerProgramSpecs struct {
-	HandleExec *ebpf.ProgramSpec `ebpf:"handle_exec"`
+	HandleExec     *ebpf.ProgramSpec `ebpf:"handle_exec"`
+	HandleExecveat *ebpf.ProgramSpec `ebpf:"handle_execveat"`
 }
 
 // execveTracerMapSpecs contains maps before they are loaded into the kernel.
@@ -109,12 +110,14 @@ type execveTracerVariables struct {
 //
 // It can be passed to loadExecveTracerObjects or ebpf.CollectionSpec.LoadAndAssign.
 type execveTracerPrograms struct {
-	HandleExec *ebpf.Program `ebpf:"handle_exec"`
+	HandleExec     *ebpf.Program `ebpf:"handle_exec"`
+	HandleExecveat *ebpf.Program `ebpf:"handle_execveat"`
 }
 
 func (p *execveTracerPrograms) Close() error {
 	return _ExecveTracerClose(
 		p.HandleExec,
+		p.HandleExecveat,
 	)
 }
 

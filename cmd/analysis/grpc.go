@@ -84,7 +84,9 @@ func (h *grpcHandler) Ingest(ctx context.Context, req *pb.IngestRequest) (*pb.In
 			event.FilePath, event.RemoteAddr, event.RemotePort)
 
 		for _, a := range actions {
-			actionStore.Add(event.HostName, a)
+			// Heuristic actions are returned inline only (immediate response
+			// path). Routing them through actionStore as well would make the
+			// agent execute them twice: once here, once via FetchActions.
 			pbActions = append(pbActions, &pb.Action{
 				Id:         a.ID,
 				ActionType: string(a.ActionType),
@@ -94,7 +96,9 @@ func (h *grpcHandler) Ingest(ctx context.Context, req *pb.IngestRequest) (*pb.In
 		}
 
 		events = append(events, event)
-		processor.Submit(event)
+		if autoAnalyzeByDefault {
+			processor.Submit(event)
+		}
 	}
 
 	if esClientInstance != nil {
@@ -165,7 +169,7 @@ func (h *grpcHandler) Analyze(ctx context.Context, req *pb.AnalysisRequest) (*pb
 		}, nil
 	}
 
-	verdict, confidenceFloat64, evidence, summary, _ := parseAnalysisResponse(response)
+	verdict, confidenceFloat64, evidence, summary, _, _ := parseAnalysisResponse(response)
 
 	return &pb.AnalysisResponse{
 		Verdict:    verdict,

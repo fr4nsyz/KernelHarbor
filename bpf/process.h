@@ -1,6 +1,20 @@
 #ifndef __PROCESS_H__
 #define __PROCESS_H__
 
+/* Zero an event struct before filling it so that unset trailing fields never
+ * leak stale ring-buffer contents to userspace. The verifier rejects the
+ * __builtin_memset intrinsic, so we zero byte-wise with a fully unrolled loop
+ * (len is always a compile-time constant here).
+ */
+static __always_inline void zero_event(void *p, unsigned long len)
+{
+	volatile __u8 *dst = (volatile __u8 *)p;
+#pragma clang loop unroll(full)
+	for (unsigned long i = 0; i < len; i++) {
+		dst[i] = 0;
+	}
+}
+
 struct process_info {
 	u32 pid;
 	u32 ppid;

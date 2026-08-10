@@ -16,7 +16,6 @@ var (
 
 func processEvent(event *Event) []Action {
 	result := evaluateHeuristic(*event, processCache)
-
 	if result.Matched {
 		log.Printf("Heuristic match [%s] PID=%d confidence=%.2f: %s",
 			result.Category, event.ProcessID, result.Confidence, result.Reason)
@@ -36,6 +35,49 @@ func processEvent(event *Event) []Action {
 	}
 
 	return result.Actions
+}
+
+// hasHeuristicSignal reports whether an event trips a heuristic or
+// correlation rule without mutating any caches.
+func hasHeuristicSignal(event *Event) bool {
+	if processCache != nil {
+		if r := evaluateHeuristic(*event, processCache); r.Matched {
+			return true
+		}
+	}
+	if correlator != nil {
+		return correlator.Evaluate(event.ProcessGUID) != nil
+	}
+	return false
+}
+
+// parseGUIDStartTime extracts the process start-time (ns) suffix from a
+// process GUID of the form <host>-<pid>-<start_ns>. Hostnames may contain
+// dashes, so we only rely on the last two dash-separated segments.
+func parseGUIDStartTime(guid string) (uint64, bool) {
+	if guid == "" {
+		return 0, false
+	}
+	idx := strings.LastIndex(guid, "-")
+	if idx < 0 || idx == len(guid)-1 {
+		return 0, false
+	}
+	startNs, err := strconv.ParseUint(guid[idx+1:], 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return startNs, true
+}
+
+// killPIDTarget builds a "<pid>@<start_ns>" target so the agent can guard
+// against PID reuse before sending SIGKILL. Falls back to bare pid when the
+// event has no usable start-time (e.g. synthetic/HTTP events without a GUID).
+func killPIDTarget(event Event) string {
+	base := strconv.Itoa(int(event.ProcessID))
+	if startNs, ok := parseGUIDStartTime(event.ProcessGUID); ok {
+		return fmt.Sprintf("%s@%d", base, startNs)
+	}
+	return base
 }
 
 type HeuristicResult struct {
@@ -103,7 +145,7 @@ func evaluateCommandHeuristic(event Event, cache *ProcessCache) HeuristicResult 
 				Timestamp:  event.Timestamp,
 				HostName:   event.HostName,
 				ActionType: rule.ActionType,
-				Target:     strconv.Itoa(int(event.ProcessID)),
+				Target:     killPIDTarget(event),
 				Reason:     result.Reason,
 			})
 			break
@@ -126,7 +168,7 @@ func evaluateCommandHeuristic(event Event, cache *ProcessCache) HeuristicResult 
 			Timestamp:  event.Timestamp,
 			HostName:   event.HostName,
 			ActionType: ActionKillPID,
-			Target:     strconv.Itoa(int(event.ProcessID)),
+			Target:     killPIDTarget(event),
 			Reason:     "cron tampering: modifying cron configuration",
 		})
 	}
@@ -155,28 +197,26 @@ func evaluateFileHeuristic(event Event, cache *ProcessCache) HeuristicResult {
 
 	for _, rule := range DefaultRules.FileRules {
 		if rule.Pattern.MatchString(path) {
-			if rule.IsWrite && isWrite {
-				result.Matched = true
-				result.Confidence = rule.Score
-				result.Category = rule.Category
-				result.Reason = fmt.Sprintf("%s: %s (flags: %s)", rule.Category, path, event.FileFlags)
-				result.Actions = append(result.Actions, Action{
-					ID:         generateEventID(),
-					Timestamp:  event.Timestamp,
-					HostName:   event.HostName,
-					ActionType: rule.ActionType,
-					Target:     strconv.Itoa(int(event.ProcessID)),
-					Reason:     result.Reason,
-				})
-				break
+			if rule.IsWrite && !isWrite {
+				continue
 			}
+			actionType := rule.ActionType
 			if !rule.IsWrite {
-				result.Matched = true
-				result.Confidence = rule.Score
-				result.Category = rule.Category
-				result.Reason = fmt.Sprintf("%s: %s", rule.Category, path)
-				break
+				actionType = rule.ReadAction
 			}
+			result.Matched = true
+			result.Confidence = rule.Score
+			result.Category = rule.Category
+			result.Reason = fmt.Sprintf("%s: %s (flags: %s)", rule.Category, path, event.FileFlags)
+			result.Actions = append(result.Actions, Action{
+				ID:         generateEventID(),
+				Timestamp:  event.Timestamp,
+				HostName:   event.HostName,
+				ActionType: actionType,
+				Target:     killPIDTarget(event),
+				Reason:     result.Reason,
+			})
+			break
 		}
 	}
 
@@ -198,7 +238,7 @@ func evaluateFileHeuristic(event Event, cache *ProcessCache) HeuristicResult {
 				Timestamp:  event.Timestamp,
 				HostName:   event.HostName,
 				ActionType: ActionAlert,
-				Target:     strconv.Itoa(int(event.ProcessID)),
+				Target:     killPIDTarget(event),
 				Reason:     result.Reason,
 			})
 		}
@@ -254,8 +294,8 @@ func evaluateNetworkHeuristic(event Event, cache *ProcessCache) HeuristicResult 
 					ID:         generateEventID(),
 					Timestamp:  event.Timestamp,
 					HostName:   event.HostName,
-					ActionType: ActionBlockIP,
-					Target:     event.RemoteAddr,
+					ActionType: ActionAlert,
+					Target:     killPIDTarget(event),
 					Reason:     result.Reason,
 				})
 			}
@@ -297,7 +337,7 @@ func applyProcessContext(result HeuristicResult, event Event, cache *ProcessCach
 				Timestamp:  event.Timestamp,
 				HostName:   event.HostName,
 				ActionType: ActionKillPID,
-				Target:     strconv.Itoa(int(event.ProcessID)),
+				Target:     killPIDTarget(event),
 				Reason:     result.Reason,
 			})
 		}

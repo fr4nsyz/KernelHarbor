@@ -105,6 +105,9 @@ func main() {
 	if protocol := os.Getenv("PROTOCOL"); protocol != "" {
 		cfg.Protocol = protocol
 	}
+	if httpAddr := os.Getenv("HTTP_ADDRESS"); httpAddr != "" {
+		cfg.Server.Addr = httpAddr
+	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -205,11 +208,9 @@ func main() {
 				events[i].EventType, events[i].EventID, events[i].ProcessID,
 				events[i].CommandLine, events[i].FilePath, events[i].RemoteAddr, events[i].RemotePort)
 
-			processor.Submit(events[i])
-		}
-
-		for _, a := range allActions {
-			actionStore.Add(a.HostName, a)
+			if autoAnalyzeByDefault {
+				processor.Submit(events[i])
+			}
 		}
 
 		if esClientInstance != nil {
@@ -218,17 +219,12 @@ func main() {
 			}
 		}
 
-		hostName := ""
-		if len(events) > 0 {
-			hostName = events[0].HostName
-		}
-		actions := actionStore.Fetch(hostName)
-		if actions == nil {
-			actions = []Action{}
+		if allActions == nil {
+			allActions = []Action{}
 		}
 		c.JSON(http.StatusAccepted, gin.H{
 			"accepted": len(events),
-			"actions":  actions,
+			"actions":  allActions,
 		})
 	})
 
@@ -272,11 +268,9 @@ func main() {
 			actions := processEvent(&batch.Events[i])
 			allActions = append(allActions, actions...)
 
-			processor.Submit(batch.Events[i])
-		}
-
-		for _, a := range allActions {
-			actionStore.Add(a.HostName, a)
+			if autoAnalyzeByDefault {
+				processor.Submit(batch.Events[i])
+			}
 		}
 
 		if esClientInstance != nil {
@@ -285,13 +279,12 @@ func main() {
 			}
 		}
 
-		actions := actionStore.Fetch(batch.HostName)
-		if actions == nil {
-			actions = []Action{}
+		if allActions == nil {
+			allActions = []Action{}
 		}
 		c.JSON(http.StatusAccepted, gin.H{
 			"accepted": len(batch.Events),
-			"actions":  actions,
+			"actions":  allActions,
 		})
 	})
 
@@ -328,7 +321,7 @@ func main() {
 			return
 		}
 
-		verdict, confidence, evidence, summary, _ := parseAnalysisResponse(response)
+		verdict, confidence, evidence, summary, _, _ := parseAnalysisResponse(response)
 
 		c.JSON(http.StatusOK, gin.H{
 			"verdict":    verdict,

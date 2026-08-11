@@ -15,7 +15,8 @@ type FileRule struct {
 	Pattern    *regexp.Regexp
 	Category   string
 	Score      float32
-	ActionType ActionType
+	ActionType ActionType // action taken on write access
+	ReadAction ActionType // action taken on read access (read rules)
 	IsWrite    bool
 }
 
@@ -96,8 +97,12 @@ var DefaultRules = DetectionRules{
 	},
 
 	FileRules: []FileRule{
-		{Pattern: regexp.MustCompile(`/etc/shadow`), Category: "credential_read", Score: 0.9, ActionType: ActionKillPID, IsWrite: false},
-		{Pattern: regexp.MustCompile(`/etc/passwd`), Category: "credential_read", Score: 0.9, ActionType: ActionKillPID, IsWrite: false},
+		// True secrets — reads (and writes) kill the process.
+		{Pattern: regexp.MustCompile(`/etc/shadow`), Category: "credential_read", Score: 0.9, ActionType: ActionKillPID, ReadAction: ActionKillPID, IsWrite: false},
+		{Pattern: regexp.MustCompile(`\.ssh/id_rsa`), Category: "ssh_key", Score: 0.9, ActionType: ActionKillPID, ReadAction: ActionKillPID, IsWrite: false},
+		{Pattern: regexp.MustCompile(`\.gnupg/`), Category: "gpg_key", Score: 0.8, ActionType: ActionKillPID, ReadAction: ActionKillPID, IsWrite: false},
+		// /etc/passwd is world-readable and written by useradd/usermod etc. — alert only.
+		{Pattern: regexp.MustCompile(`/etc/passwd`), Category: "credential_read", Score: 0.4, ActionType: ActionAlert, ReadAction: ActionAlert, IsWrite: false},
 		{Pattern: regexp.MustCompile(`/etc/sudoers`), Category: "privilege_escalation", Score: 0.9, ActionType: ActionKillPID, IsWrite: true},
 		{Pattern: regexp.MustCompile(`/etc/crontab`), Category: "cron_tampering", Score: 0.8, ActionType: ActionKillPID, IsWrite: true},
 		{Pattern: regexp.MustCompile(`/etc/cron\.d/`), Category: "cron_tampering", Score: 0.8, ActionType: ActionKillPID, IsWrite: true},
@@ -109,9 +114,7 @@ var DefaultRules = DetectionRules{
 		{Pattern: regexp.MustCompile(`/etc/login\.defs`), Category: "login_tampering", Score: 0.8, ActionType: ActionKillPID, IsWrite: true},
 		{Pattern: regexp.MustCompile(`/var/spool/cron/`), Category: "cron_tampering", Score: 0.8, ActionType: ActionKillPID, IsWrite: true},
 		{Pattern: regexp.MustCompile(`\.ssh/authorized_keys`), Category: "ssh_authorized_keys", Score: 0.9, ActionType: ActionKillPID, IsWrite: true},
-		{Pattern: regexp.MustCompile(`\.ssh/id_rsa`), Category: "ssh_key", Score: 0.9, ActionType: ActionKillPID, IsWrite: false},
 		{Pattern: regexp.MustCompile(`\.ssh/config`), Category: "ssh_config", Score: 0.7, ActionType: ActionKillPID, IsWrite: true},
-		{Pattern: regexp.MustCompile(`\.gnupg/`), Category: "gpg_key", Score: 0.8, ActionType: ActionKillPID, IsWrite: false},
 		{Pattern: regexp.MustCompile(`/boot/grub/`), Category: "boot_tampering", Score: 0.9, ActionType: ActionKillPID, IsWrite: true},
 		{Pattern: regexp.MustCompile(`/etc/ld\.so\.preload`), Category: "ld_preload", Score: 0.95, ActionType: ActionKillPID, IsWrite: true},
 		{Pattern: regexp.MustCompile(`/etc/ld\.so\.conf`), Category: "ld_config", Score: 0.8, ActionType: ActionKillPID, IsWrite: true},

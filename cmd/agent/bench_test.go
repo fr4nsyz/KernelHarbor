@@ -350,15 +350,159 @@ func TestDecodeOpenFlags(t *testing.T) {
 }
 
 func TestBatcher(t *testing.T) {
-	var received [][]UnifiedEvent
-	done := make(chan struct{})
+	t.Run("size flush", func(t *testing.T) {
+		var mu sync.Mutex
+		var batches [][]UnifiedEvent
+		got := make(chan []UnifiedEvent, 16)
+		b := newBatcherWithSend(func(evts []UnifiedEvent) {
+			mu.Lock()
+			batches = append(batches, evts)
+			mu.Unlock()
+			select {
+			case got <- evts:
+			default:
+			}
+		}, 10*time.Minute, 8)
+		defer b.Stop()
 
-	go func() {
-		for batch := range make(chan []UnifiedEvent) {
-			received = append(received, batch)
+		for i := 0; i < 8; i++ {
+			b.Add(UnifiedEvent{EventID: fmt.Sprintf("e%d", i)})
 		}
-	}()
+		select {
+		case batch := <-got:
+			if len(batch) != 8 {
+				t.Fatalf("size flush got %d events, want 8", len(batch))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("batcher did not flush at size threshold")
+		}
+	})
 
-	_ = received
-	_ = done
+	t.Run("timer flush", func(t *testing.T) {
+		var mu sync.Mutex
+		var batches [][]UnifiedEvent
+		got := make(chan []UnifiedEvent, 16)
+		b := newBatcherWithSend(func(evts []UnifiedEvent) {
+			mu.Lock()
+			batches = append(batches, evts)
+			mu.Unlock()
+			select {
+			case got <- evts:
+			default:
+			}
+		}, 50*time.Millisecond, 100)
+		defer b.Stop()
+
+		b.Add(UnifiedEvent{EventID: "e0"})
+		select {
+		case batch := <-got:
+			if len(batch) != 1 {
+				t.Fatalf("timer flush got %d events, want 1", len(batch))
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("batcher did not flush on timer expiry")
+		}
+	})
+}
+
+func TestParseKillTarget(t *testing.T) {
+	tests := []struct {
+		name    string
+		target  string
+		wantPid int
+		wantNs  uint64
+		wantErr bool
+	}{
+		{"pid with start time", "123@987654321", 123, 987654321, false},
+		{"bare pid", "456", 456, 0, false},
+		{"empty", "", 0, 0, true},
+		{"garbage", "abc", 0, 0, true},
+		{"bad start", "123@xyz", 0, 0, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			pid, ns, err := parseKillTarget(tt.target)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("parseKillTarget(%q) error = %v, wantErr %v", tt.target, err, tt.wantErr)
+			}
+			if err != nil {
+				return
+			}
+			if pid != tt.wantPid || ns != tt.wantNs {
+				t.Errorf("parseKillTarget(%q) = (%d, %d), want (%d, %d)", tt.target, pid, ns, tt.wantPid, tt.wantNs)
+			}
+		})
+	}
+}
+
+func TestProcessStartTimeNs(t *testing.T) {
+	start, err := processStartTimeNs(os.Getpid())
+	if err != nil {
+		t.Fatalf("processStartTimeNs(self) failed: %v", err)
+	}
+	if start == 0 {
+		t.Fatal("processStartTimeNs(self) returned 0")
+	}
+	// Boot time on any machine is < ~10 years of ns for a live process.
+	if start > uint64(10*365*24*int64(time.Hour)) {
+		t.Errorf("processStartTimeNs(self) = %d, implausibly large", start)
+	}
+
+	if _, err := processStartTimeNs(99999999); err == nil {
+		t.Error("expected error for nonexistent PID")
+	}
+}
+
+func TestHTTPWireSchema(t *testing.T) {
+	// The agent's HTTP ingest payload must use the same dotted JSON keys as the
+	// analysis Event struct (file.flags, remote.address, local.address,
+	// file.mode). Mismatches here silently drop data on the wire.
+	ev := UnifiedEvent{
+		EventID:     "evt-1",
+		HostName:    "testhost",
+		EventType:   "open",
+		ProcessID:   42,
+		FilePath:    "/etc/passwd",
+		FlagsDesc:   "O_RDONLY",
+		RemoteAddr:  "1.2.3.4",
+		RemotePort:  443,
+		LocalAddr:   "10.0.0.1",
+		LocalPort:   54321,
+		Mode:        0644,
+		CommandLine: "cat /etc/passwd",
+	}
+
+	data, err := json.Marshal(ev)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	var m map[string]any
+	if err := json.Unmarshal(data, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+
+	for key, want := range map[string]any{
+		"file.flags":     "O_RDONLY",
+		"remote.address": "1.2.3.4",
+		"local.address":  "10.0.0.1",
+		"file.mode":      float64(0644),
+		"file.path":      "/etc/passwd",
+	} {
+		got, ok := m[key]
+		if !ok {
+			t.Errorf("key %q missing from HTTP payload: %s", key, data)
+			continue
+		}
+		if got != want {
+			t.Errorf("key %q = %v, want %v", key, got, want)
+		}
+	}
+
+	for _, stale := range []string{"flags.desc", "remote.addr", "local.addr", "mode"} {
+		if _, ok := m[stale]; ok {
+			t.Errorf("stale key %q still present in HTTP payload", stale)
+		}
+	}
 }

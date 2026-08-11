@@ -472,3 +472,39 @@ func (e *ESClient) IndexAnalysisResult(ctx context.Context, result AnalysisResul
 
 	return nil
 }
+
+// UpdateEmbedding patches the dense vector onto an already-indexed event doc
+// (kb-events) without replacing the rest of the source.
+func (e *ESClient) UpdateEmbedding(ctx context.Context, eventID string, embedding []float32) error {
+	if eventID == "" {
+		return nil
+	}
+
+	body, err := json.Marshal(map[string]any{
+		"doc": map[string]any{
+			VectorField: embedding,
+		},
+	})
+	if err != nil {
+		return err
+	}
+
+	req := esapi.UpdateRequest{
+		Index:      e.index,
+		DocumentID: eventID,
+		Body:       bytes.NewReader(body),
+		Refresh:    "false",
+	}
+
+	res, err := req.Do(ctx, e.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return fmt.Errorf("update embedding error: %s", res.String())
+	}
+
+	return nil
+}

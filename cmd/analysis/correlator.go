@@ -334,7 +334,7 @@ func (c *Correlator) buildActions(chain *CorrelationChain) []Action {
 			Timestamp:  time.Now(),
 			HostName:   e.HostName,
 			ActionType: ActionKillPID,
-			Target:     fmt.Sprintf("%d", e.ProcessID),
+			Target:     killPIDTarget(e),
 			Reason:     fmt.Sprintf("Correlated chain [%s] (score %.2f): %s", strings.Join(chain.ChainDesc, ", "), chain.Score, strings.Join(chain.Evidence, "; ")),
 		})
 		if (e.EventType == EventTypeNetwork || e.EventType == "connect") && e.RemoteAddr != "" {

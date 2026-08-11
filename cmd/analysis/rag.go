@@ -156,10 +156,11 @@ func buildAnalysisPrompt(events []Event, similarEvents []Event, processChains ma
 	prompt.WriteString("Examine the following batch of events for suspicious or malicious behavior.\n\n")
 
 	prompt.WriteString("## Current Event Batch\n")
-	prompt.WriteString("| Timestamp | Type | PID | Parent PID | Image | Command Line | User |\n")
-	prompt.WriteString("|-----------|------|-----|------------|-------|--------------|------|\n")
+	prompt.WriteString("| ID | Timestamp | Type | PID | Parent PID | Image | Command Line | User |\n")
+	prompt.WriteString("|----|-----------|------|-----|------------|-------|--------------|------|\n")
 	for _, e := range events {
-		prompt.WriteString(fmt.Sprintf("| %s | %s | %d | %d | %s | %s | %s |\n",
+		prompt.WriteString(fmt.Sprintf("| %s | %s | %s | %d | %d | %s | %s | %s |\n",
+			e.EventID,
 			e.Timestamp.Format(time.RFC3339),
 			e.EventType,
 			e.ProcessID,
@@ -254,9 +255,11 @@ func buildAnalysisPrompt(events []Event, similarEvents []Event, processChains ma
 	prompt.WriteString("  \"verdict\": \"benign|suspicious|malicious\",\n")
 	prompt.WriteString("  \"confidence\": 0.0-1.0,\n")
 	prompt.WriteString("  \"evidence\": [\"list of suspicious indicators\"],\n")
-	prompt.WriteString("  \"summary\": \"brief explanation\"\n")
+	prompt.WriteString("  \"summary\": \"brief explanation\",\n")
+	prompt.WriteString("  \"malicious_events\": [\"<event.id of each event in the batch that is malicious>\"]\n")
 	prompt.WriteString("}\n")
 	prompt.WriteString("```\n")
+	prompt.WriteString("When the overall verdict is \"malicious\", \"malicious_events\" MUST list the exact event.id values from the batch table that are malicious. If no individual event is malicious, return an empty array. Omit the field only if you cannot identify any event.\n")
 
 	return prompt.String()
 }
@@ -269,22 +272,23 @@ func truncate(s string, maxLen int) string {
 	return string(runes[:maxLen-3]) + "..."
 }
 
-func parseAnalysisResponse(response string) (string, float64, []string, string, error) {
+func parseAnalysisResponse(response string) (string, float64, []string, string, []string, error) {
 	jsonStr := extractJSON(response)
 
 	var result struct {
-		Verdict    string   `json:"verdict"`
-		Confidence float64  `json:"confidence"`
-		Evidence   []string `json:"evidence"`
-		Summary    string   `json:"summary"`
+		Verdict         string   `json:"verdict"`
+		Confidence      float64  `json:"confidence"`
+		Evidence        []string `json:"evidence"`
+		Summary         string   `json:"summary"`
+		MaliciousEvents []string `json:"malicious_events"`
 	}
 
 	decoder := json.NewDecoder(bytes.NewReader([]byte(jsonStr)))
 	if err := decoder.Decode(&result); err != nil {
-		return "unknown", 0.0, nil, response, fmt.Errorf("failed to parse analysis: %w", err)
+		return "unknown", 0.0, nil, response, nil, fmt.Errorf("failed to parse analysis: %w", err)
 	}
 
-	return result.Verdict, result.Confidence, result.Evidence, result.Summary, nil
+	return result.Verdict, result.Confidence, result.Evidence, result.Summary, result.MaliciousEvents, nil
 }
 
 func extractJSON(s string) string {

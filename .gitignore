@@ -1,8 +1,8 @@
 bpf/vmlinux.h
 
 # Binaries
-execve-tracer
-open-tracer
+/execve-tracer
+/open-tracer
 out
 cmd/*/execve-tracer
 cmd/*/open-tracer

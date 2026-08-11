@@ -230,6 +230,8 @@ int handle_openat(struct trace_event_raw_sys_enter *ctx) {
 	if (!e)
 		return 0;
 
+	zero_event(e, sizeof(*e));
+
 	read_process_info(&e->proc);
 
 	e->dirfd = (int)ctx->args[0];

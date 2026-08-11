@@ -115,18 +115,22 @@ curl -X POST http://localhost:8080/analyze \
 
 Automatic response actions are delivered to the agent through two mechanisms:
 
-- **Immediate (heuristic)** — When the heuristic engine matches a known-bad pattern on ingest, an action is returned directly in the `IngestResponse` of the same RPC call. The agent executes it instantly — zero additional latency.
+- **Immediate (heuristic)** — When the heuristic engine matches a known-bad pattern on ingest, an action is returned directly in the `IngestResponse` of the same RPC call. The agent executes it instantly — zero additional latency. Heuristic actions are returned inline only; they are **not** also stored for `FetchActions`, so the agent never executes them twice.
 
-- **Delayed (AI)** — After the async AI analysis completes (1-3s), if the verdict is malicious, an action is stored in memory. The agent polls `FetchActions(hostname)` every 5 seconds and executes any pending actions.
+- **Delayed (AI)** — After the async AI analysis completes (1-3s), if the verdict is malicious, an action is stored in memory. The agent polls `FetchActions(hostname)` every 5 seconds and executes any pending actions. `KILL_PID`/`BLOCK_IP` are only produced for events the model explicitly flagged (`malicious_events`); if none are flagged, events with a heuristic/correlation signal still get killed while the rest are escalated to `ALERT`.
 
 | Trigger | Latency | Action Examples |
 |---------|---------|----------------|
 | Heuristic match (high confidence) | Same RPC response | `KILL_PID`, `BLOCK_IP` |
 | Heuristic match (low confidence) | Same RPC response | `ALERT` |
 | Correlation chain detected | Same RPC response | `KILL_PID`, `BLOCK_IP` |
-| AI "malicious" verdict | ~5-8s (batch + poll) | `KILL_PID`, `BLOCK_IP` |
+| AI "malicious" verdict | ~5-8s (batch + poll) | `KILL_PID`, `BLOCK_IP`, `ALERT` |
 
 The agent runs as root and executes actions using OS primitives: `SIGKILL` for process termination and `iptables` for IP blocking.
+
+- `KILL_PID` targets are `<pid>@<start_ns>`. The agent compares the target's start time against `/proc/<pid>/stat` before sending `SIGKILL`, so a recycled PID is never killed.
+- `BLOCK_IP` installs **both** an `OUTPUT` and an `INPUT` `iptables` drop rule. Rules are only added if the same rule doesn't already exist, making repeated actions idempotent.
+- On busy systems, disable auto-analysis on ingest with `./analysis -no-auto-analyze`; the HTTP `ingest` endpoint still stores events and returns heuristic actions.
 
 ### Configurable Detection Rules
 

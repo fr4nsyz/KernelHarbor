@@ -139,11 +139,15 @@ func TestParseAnalysisResponse(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			gotVerdict, gotConfidence, _, gotSummary, err := parseAnalysisResponse(tt.input)
+			gotVerdict, gotConfidence, _, gotSummary, gotMalicious, err := parseAnalysisResponse(tt.input)
 
 			if (err != nil) != tt.wantErr {
 				t.Errorf("parseAnalysisResponse() error = %v, wantErr %v", err, tt.wantErr)
 				return
+			}
+
+			if len(gotMalicious) > 0 {
+				t.Errorf("unexpected malicious_events in %q: %v", tt.input, gotMalicious)
 			}
 
 			if gotVerdict != tt.wantVerdict {

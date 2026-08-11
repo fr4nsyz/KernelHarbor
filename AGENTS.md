@@ -48,8 +48,9 @@ gRPC on port 9090 (configurable via `GRPC_ADDRESS`)
 - **eBPF requires Linux**: Agent only works on Linux with kernel headers and root access
 - **CI has no eBPF**: GitHub Actions runners don't support eBPF - integration tests are skipped in CI
 - **External services required**: Analysis needs Elasticsearch 8.x and Ollama running
-- **Code generation**: Run `cd cmd/agent && go generate ./...` to regenerate eBPF bindings. Same for standalone tracers (`cd cmd/execve-tracer && go generate ./...`, etc.)
-- **Proto generation**: Run `protoc --go_out=. --go-grpc_out=. proto/agent.proto` after editing proto, then fix package names: `sed -i 's/package kernelharborpb/package proto/' cmd/agent/proto/*.go` and `sed -i 's/package kernelharborpb/package pb/' cmd/analysis/pb/*.go`
+- **Code generation**: Run `make` (or `cd cmd/agent && go generate ./...`) to regenerate eBPF bindings. Same for standalone tracers (`cd cmd/execve-tracer && go generate ./...`, etc.). Each tracer dir (`cmd/execve-tracer`, `cmd/open-tracer`, `cmd/openat-tracer`) is its own Go module.
+- **Proto generation**: Run `make proto` after editing `proto/agent.proto`. This regenerates both `cmd/agent/proto` (package `proto`) and `cmd/analysis/pb` (package `pb`) in one step.
+- **Generated files are not committed**: eBPF object files (`cmd/*/*_bpf*.o`), binaries (`cmd/*/<name>`, `execve-tracer`, `open-tracer`), and `bpf/vmlinux.h` are gitignored. Generated `.go` bindings under `cmd/*/*_bpf*.go` are also produced by `go generate`; keep generated Go code out of commits unless a tracer module can't be built without it.
 
 ## Project Structure
 

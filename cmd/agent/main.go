@@ -19,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
 	"github.com/cilium/ebpf/ringbuf"
 	"github.com/cilium/ebpf/rlimit"
@@ -53,6 +54,11 @@ var (
 	grpcMu     sync.RWMutex
 	grpcClosed atomic.Bool
 	httpClient *http.Client
+
+	xdpInterfaces = parseXDPInterfaces(os.Getenv("XDP_INTERFACES"))
+	xdpLoaded     atomic.Bool
+	xdpLinks      []link.Link
+	xdpObjs       xdpBlocklistObjects
 )
 
 type tokenAuth struct {
@@ -148,6 +154,16 @@ type ConnectEvent struct {
 	LocalIpLen uint8
 	LocalIp    [16]byte
 	LocalPort  uint16
+}
+
+type lpmKeyV4 struct {
+	PrefixLen uint32
+	Data      [4]byte
+}
+
+type lpmKeyV6 struct {
+	PrefixLen uint32
+	Data      [16]byte
 }
 
 type EventBatch struct {
@@ -389,6 +405,30 @@ func formatIP(ipBytes []byte) string {
 	return ""
 }
 
+func parseXDPInterfaces(spec string) []string {
+	var names []string
+	for _, s := range strings.Split(spec, ",") {
+		if s = strings.TrimSpace(s); s != "" {
+			names = append(names, s)
+		}
+	}
+	return names
+}
+
+func newLPMKeyV4(ip net.IP) lpmKeyV4 {
+	var k lpmKeyV4
+	k.PrefixLen = 32
+	copy(k.Data[:], ip.To4())
+	return k
+}
+
+func newLPMKeyV6(ip net.IP) lpmKeyV6 {
+	var k lpmKeyV6
+	k.PrefixLen = 128
+	copy(k.Data[:], ip.To16())
+	return k
+}
+
 func main() {
 	if err := rlimit.RemoveMemlock(); err != nil {
 		log.Fatal(err)
@@ -429,6 +469,30 @@ func main() {
 		log.Fatalf("failed to load openat tracer: %v", err)
 	}
 	defer openatObjs.Close()
+
+	if len(xdpInterfaces) > 0 {
+		if err := loadXdpBlocklistObjects(&xdpObjs, nil); err != nil {
+			log.Fatalf("failed to load xdp blocklist: %v", err)
+		}
+		defer xdpObjs.Close()
+		defer closeXDP()
+		xdpLoaded.Store(true)
+
+		attached := 0
+		for _, name := range xdpInterfaces {
+			if err := attachXDP(xdpObjs.XdpBlocklist, name); err != nil {
+				log.Printf("xdp: not attached on %s: %v", name, err)
+				continue
+			}
+			attached++
+		}
+		if attached > 0 {
+			fmt.Printf("XDP ingress blocklist active on %d interface(s): %s\n",
+				attached, strings.Join(xdpInterfaces, ", "))
+		} else {
+			log.Printf("xdp: no interfaces attached (requested: %s)", strings.Join(xdpInterfaces, ", "))
+		}
+	}
 
 	execveTp, err := link.Tracepoint("syscalls", "sys_enter_execve", execveObjs.HandleExec, nil)
 	if err != nil {
@@ -860,6 +924,7 @@ func executeActions(actions []*pb.Action) {
 					ok = false
 				}
 			}
+			blockInXDP(ip)
 			if ok {
 				blockedIPs.Store(ip, true)
 			} else {
@@ -873,6 +938,62 @@ func executeActions(actions []*pb.Action) {
 }
 
 var blockedIPs sync.Map
+
+func attachXDP(prog *ebpf.Program, ifaceName string) error {
+	iface, err := net.InterfaceByName(ifaceName)
+	if err != nil {
+		return err
+	}
+	opts := link.XDPOptions{Program: prog, Interface: iface.Index}
+	l, err := link.AttachXDP(opts)
+	if err != nil {
+		log.Printf("xdp: native mode unavailable on %s (%v), retrying with generic mode", ifaceName, err)
+		opts.Flags = link.XDPGenericMode
+		l, err = link.AttachXDP(opts)
+	}
+	if err != nil {
+		return err
+	}
+	xdpLinks = append(xdpLinks, l)
+	log.Printf("xdp: attached to %s", ifaceName)
+	return nil
+}
+
+func closeXDP() {
+	for _, l := range xdpLinks {
+		l.Close()
+	}
+	xdpLinks = nil
+}
+
+func blockInXDP(ipStr string) {
+	if !xdpLoaded.Load() {
+		return
+	}
+
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		log.Printf("ACTION BLOCK_IP %s: xdp skipped, invalid ip", ipStr)
+		return
+	}
+
+	if v4 := ip.To4(); v4 != nil {
+		key := newLPMKeyV4(v4)
+		if err := xdpObjs.BlocklistV4.Update(&key, uint8(1), ebpf.UpdateAny); err != nil {
+			log.Printf("ACTION BLOCK_IP %s: xdp v4 map update failed: %v", ipStr, err)
+		} else {
+			log.Printf("ACTION BLOCK_IP %s added to XDP ingress blocklist", ipStr)
+		}
+		return
+	}
+
+	key := newLPMKeyV6(ip)
+	if err := xdpObjs.BlocklistV6.Update(&key, uint8(1), ebpf.UpdateAny); err != nil {
+		log.Printf("ACTION BLOCK_IP %s: xdp v6 map update failed: %v", ipStr, err)
+	} else {
+		log.Printf("ACTION BLOCK_IP %s added to XDP ingress blocklist", ipStr)
+	}
+}
 
 // parseKillTarget parses "<pid>@<start_ns>" (or a bare pid for legacy targets).
 func parseKillTarget(target string) (int, uint64, error) {

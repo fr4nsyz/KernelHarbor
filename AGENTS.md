@@ -42,6 +42,7 @@ gRPC on port 9090 (configurable via `GRPC_ADDRESS`)
 | `GRPC_AUTH_TOKEN` | `` | analysis/agent (shared secret - set same on both sides) |
 | `HTTP_ADDRESS` | `:8080` | analysis |
 | `PROTOCOL` | `both` | analysis (http, grpc, or both) |
+| `XDP_INTERFACES` | `` | agent (comma-separated NICs for XDP ingress blocklist; empty disables XDP) |
 
 ## Important Constraints
 

@@ -148,6 +148,7 @@ func (o *OllamaClient) BatchEmbed(ctx context.Context, texts []string) ([][]floa
 var ollamaClient *OllamaClient
 var processor *BatchProcessor
 var actionStore = NewActionStore()
+var classifier = NewClassifier(nil, 0, 1)
 
 func buildAnalysisPrompt(events []Event, similarEvents []Event, processChains map[string][]Event, correlationChains []*CorrelationChain) string {
 	var prompt bytes.Buffer

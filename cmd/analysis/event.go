@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"sync"
 	"time"
 )
@@ -42,6 +43,13 @@ type Event struct {
 	LocalPort  uint16 `json:"local.port,omitempty"`
 
 	Metadata map[string]any `json:"metadata,omitempty"`
+
+	Category           string  `json:"attack.category,omitempty"`
+	TechniqueID        string  `json:"attack.technique,omitempty"`
+	TechniqueName      string  `json:"attack.technique_name,omitempty"`
+	Tactic             string  `json:"attack.tactic,omitempty"`
+	CategorySource     string  `json:"attack.source,omitempty"`
+	CategoryConfidence float64 `json:"attack.confidence,omitempty"`
 
 	Embedding []float32 `json:"embedding,omitempty"`
 }
@@ -202,6 +210,13 @@ func extractBinaryName(path string) string {
 		}
 	}
 	return toLower(path)
+}
+
+func baseName(path string) string {
+	if i := strings.LastIndexAny(path, "/\\"); i >= 0 {
+		return path[i+1:]
+	}
+	return path
 }
 
 func extractFileType(path string) string {

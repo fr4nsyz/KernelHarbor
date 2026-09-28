@@ -9,6 +9,7 @@ import (
 
 type CorrelationChain struct {
 	ProcessGUID string
+	Rule        string
 	Events      []Event
 	ChainDesc   []string
 	Score       float64
@@ -259,12 +260,14 @@ func (c *Correlator) Evaluate(processGUID string) *CorrelationChain {
 	}
 
 	var bestScore float64
+	var bestRule string
 	for _, rule := range c.rules {
 		if matched, evidence := rule.match(recent); matched {
 			chain.ChainDesc = append(chain.ChainDesc, rule.name)
 			chain.Evidence = append(chain.Evidence, evidence...)
 			if rule.score > bestScore {
 				bestScore = rule.score
+				bestRule = rule.name
 			}
 		}
 	}
@@ -273,6 +276,7 @@ func (c *Correlator) Evaluate(processGUID string) *CorrelationChain {
 		return nil
 	}
 
+	chain.Rule = bestRule
 	chain.Score = bestScore
 	chain.Verdict = scoreToVerdict(bestScore)
 	chain.Actions = c.buildActions(chain)

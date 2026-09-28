@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -34,6 +35,13 @@ type Config struct {
 		EmbedModel string `yaml:"embed_model" json:"embed_model"`
 		EmbedDim   int    `yaml:"embed_dim" json:"embed_dim"`
 	} `yaml:"ollama" json:"ollama"`
+	Laya struct {
+		Address       string  `yaml:"address" json:"address"`
+		APIKey        string  `yaml:"api_key" json:"api_key"`
+		Model         string  `yaml:"model" json:"model"`
+		MinConfidence float64 `yaml:"min_confidence" json:"min_confidence"`
+		Concurrency   int     `yaml:"concurrency" json:"concurrency"`
+	} `yaml:"laya" json:"laya"`
 	Processor struct {
 		Workers      int           `yaml:"workers" json:"workers"`
 		BatchSize    int           `yaml:"batch_size" json:"batch_size"`
@@ -66,6 +74,17 @@ func getDefaultConfig() Config {
 			Model:      "qwen2.5:1.5b",
 			EmbedModel: "nomic-embed-text",
 			EmbedDim:   VectorDim,
+		},
+		Laya: struct {
+			Address       string  `yaml:"address" json:"address"`
+			APIKey        string  `yaml:"api_key" json:"api_key"`
+			Model         string  `yaml:"model" json:"model"`
+			MinConfidence float64 `yaml:"min_confidence" json:"min_confidence"`
+			Concurrency   int     `yaml:"concurrency" json:"concurrency"`
+		}{
+			Address:       "http://localhost:8000",
+			MinConfidence: 0.5,
+			Concurrency:   4,
 		},
 		Processor: struct {
 			Workers      int           `yaml:"workers" json:"workers"`
@@ -102,6 +121,31 @@ func main() {
 	if ollamaModel := os.Getenv("OLLAMA_MODEL"); ollamaModel != "" {
 		cfg.Ollama.Model = ollamaModel
 	}
+	// LookupEnv, not Getenv: an explicitly empty LAYA_ADDRESS disables Laya
+	// classification, while an unset one keeps the default.
+	if layaAddr, set := os.LookupEnv("LAYA_ADDRESS"); set {
+		cfg.Laya.Address = layaAddr
+	}
+	if layaKey := os.Getenv("LAYA_API_KEY"); layaKey != "" {
+		cfg.Laya.APIKey = layaKey
+	}
+	if layaModel := os.Getenv("LAYA_MODEL"); layaModel != "" {
+		cfg.Laya.Model = layaModel
+	}
+	if layaConf := os.Getenv("LAYA_MIN_CONFIDENCE"); layaConf != "" {
+		if parsed, err := strconv.ParseFloat(layaConf, 64); err == nil {
+			cfg.Laya.MinConfidence = parsed
+		} else {
+			log.Printf("Warning: invalid LAYA_MIN_CONFIDENCE %q, using %.2f", layaConf, cfg.Laya.MinConfidence)
+		}
+	}
+	if layaConc := os.Getenv("LAYA_CONCURRENCY"); layaConc != "" {
+		if parsed, err := strconv.Atoi(layaConc); err == nil && parsed > 0 {
+			cfg.Laya.Concurrency = parsed
+		} else {
+			log.Printf("Warning: invalid LAYA_CONCURRENCY %q, using %d", layaConc, cfg.Laya.Concurrency)
+		}
+	}
 	if protocol := os.Getenv("PROTOCOL"); protocol != "" {
 		cfg.Protocol = protocol
 	}
@@ -134,6 +178,24 @@ func main() {
 		EmbedDim:   cfg.Ollama.EmbedDim,
 	})
 	log.Printf("Ollama client configured: %s %s", cfg.Ollama.Address, cfg.Ollama.Model)
+
+	if cfg.Laya.Address == "" {
+		log.Printf("Laya classification disabled (LAYA_ADDRESS is empty)")
+	} else {
+		layaClient := NewLayaClient(LayaConfig{
+			Address: cfg.Laya.Address,
+			APIKey:  cfg.Laya.APIKey,
+			Model:   cfg.Laya.Model,
+		})
+		if layaClient.Healthy(ctx) {
+			classifier = NewClassifier(layaClient, cfg.Laya.MinConfidence, cfg.Laya.Concurrency)
+			log.Printf("Laya classifier configured: %s (min_confidence=%.2f, concurrency=%d)",
+				cfg.Laya.Address, cfg.Laya.MinConfidence, cfg.Laya.Concurrency)
+		} else {
+			log.Printf("Warning: Laya server not reachable at %s, attack classification limited to heuristics",
+				cfg.Laya.Address)
+		}
+	}
 
 	processor = NewBatchProcessor(BatchProcessorConfig{
 		Workers:      cfg.Processor.Workers,
@@ -173,6 +235,7 @@ func main() {
 		c.JSON(http.StatusOK, gin.H{
 			"elasticsearch": esClientInstance != nil,
 			"ollama":        ollamaClient != nil,
+			"laya":          classifier.Enabled(),
 		})
 	})
 

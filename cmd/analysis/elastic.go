@@ -72,7 +72,7 @@ func (e *ESClient) ensureIndex(ctx context.Context) error {
 
 	if res.StatusCode == 200 {
 		log.Printf("Index %s already exists", e.index)
-		return nil
+		return e.ensureAttackMapping(ctx)
 	}
 
 	mapping := e.buildMapping()
@@ -91,7 +91,52 @@ func (e *ESClient) ensureIndex(ctx context.Context) error {
 	}
 
 	log.Printf("Created index %s", e.index)
+	return e.ensureAttackMapping(ctx)
+}
+
+func (e *ESClient) ensureAttackMapping(ctx context.Context) error {
+	body := map[string]any{
+		"properties": e.attackProperties(),
+	}
+
+	res, err := e.client.Indices.PutMapping(
+		[]string{e.index},
+		bytes.NewReader(mustJSON(body)),
+		e.client.Indices.PutMapping.WithContext(ctx),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to update attack mapping: %w", err)
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return fmt.Errorf("attack mapping update error: %s", res.String())
+	}
+
 	return nil
+}
+
+func (e *ESClient) attackProperties() map[string]any {
+	return map[string]any{
+		"attack.category": map[string]any{
+			"type": "keyword",
+		},
+		"attack.technique": map[string]any{
+			"type": "keyword",
+		},
+		"attack.technique_name": map[string]any{
+			"type": "keyword",
+		},
+		"attack.tactic": map[string]any{
+			"type": "keyword",
+		},
+		"attack.source": map[string]any{
+			"type": "keyword",
+		},
+		"attack.confidence": map[string]any{
+			"type": "float",
+		},
+	}
 }
 
 func (e *ESClient) buildMapping() []byte {
@@ -179,7 +224,20 @@ func (e *ESClient) buildMapping() []byte {
 		},
 	}
 
+	for name, property := range e.attackProperties() {
+		mapping["mappings"].(map[string]any)["properties"].(map[string]any)[name] = property
+	}
+
 	data, _ := json.Marshal(mapping)
+	return data
+}
+
+func mustJSON(value any) []byte {
+	data, err := json.Marshal(value)
+	if err != nil {
+		log.Printf("failed to marshal mapping body: %v", err)
+		return []byte("{}")
+	}
 	return data
 }
 
@@ -504,6 +562,62 @@ func (e *ESClient) UpdateEmbedding(ctx context.Context, eventID string, embeddin
 
 	if res.IsError() {
 		return fmt.Errorf("update embedding error: %s", res.String())
+	}
+
+	return nil
+}
+
+func attackDoc(event Event) map[string]any {
+	doc := map[string]any{}
+
+	if event.Category != "" {
+		doc["attack.category"] = event.Category
+	}
+	if event.TechniqueID != "" {
+		doc["attack.technique"] = event.TechniqueID
+	}
+	if event.TechniqueName != "" {
+		doc["attack.technique_name"] = event.TechniqueName
+	}
+	if event.Tactic != "" {
+		doc["attack.tactic"] = event.Tactic
+	}
+	if event.CategorySource != "" {
+		doc["attack.source"] = event.CategorySource
+	}
+	if event.CategoryConfidence > 0 {
+		doc["attack.confidence"] = event.CategoryConfidence
+	}
+
+	return doc
+}
+
+func (e *ESClient) UpdateCategories(ctx context.Context, eventID string, event Event) error {
+	doc := attackDoc(event)
+	if len(doc) == 0 {
+		return nil
+	}
+
+	body, err := json.Marshal(map[string]any{"doc": doc})
+	if err != nil {
+		return err
+	}
+
+	req := esapi.UpdateRequest{
+		Index:      e.index,
+		DocumentID: eventID,
+		Body:       bytes.NewReader(body),
+		Refresh:    "false",
+	}
+
+	res, err := req.Do(ctx, e.client)
+	if err != nil {
+		return err
+	}
+	defer res.Body.Close()
+
+	if res.IsError() {
+		return fmt.Errorf("update categories error: %s", res.String())
 	}
 
 	return nil

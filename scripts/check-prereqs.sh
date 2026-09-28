@@ -20,7 +20,7 @@ print_banner() {
 }
 
 check_elasticsearch() {
-    echo -e "${CYAN}${BOLD}[1/3] Checking Elasticsearch...${NC}"
+    echo -e "${CYAN}${BOLD}[1/4] Checking Elasticsearch...${NC}"
     
     ES_ADDR="${ES_ADDRESSES:-http://localhost:9200}"
     
@@ -63,14 +63,14 @@ check_elasticsearch() {
 }
 
 check_ollama() {
-    echo -e "${CYAN}${BOLD}[2/3] Checking Ollama...${NC}"
+    echo -e "${CYAN}${BOLD}[2/4] Checking Ollama...${NC}"
     
     OLLAMA_ADDR="${OLLAMA_ADDRESS:-http://localhost:11434}"
     
     if curl -s -f "${OLLAMA_ADDR}/api/tags" > /dev/null 2>&1; then
         echo -e "${GREEN}✓ Ollama is running at ${OLLAMA_ADDR}${NC}"
         
-        MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
+        MODEL="${OLLAMA_MODEL:-qwen2.5:1.5b}"
         echo -e "${CYAN}  Checking for model: ${MODEL}${NC}"
         
         if curl -s "${OLLAMA_ADDR}/api/tags" | grep -q "\"${MODEL}\""; then
@@ -94,7 +94,7 @@ check_ollama() {
                 if curl -s -f "${OLLAMA_ADDR}/api/tags" > /dev/null 2>&1; then
                     echo -e "${GREEN}✓ Ollama is ready!${NC}"
                     
-                    MODEL="${OLLAMA_MODEL:-qwen2.5:7b}"
+                    MODEL="${OLLAMA_MODEL:-qwen2.5:1.5b}"
                     echo -e "${YELLOW}  Pulling model '${MODEL}' (first run)...${NC}"
                     ollama pull "${MODEL}" 2>/dev/null || true
                     return 0
@@ -110,8 +110,31 @@ check_ollama() {
     fi
 }
 
+check_laya() {
+    echo -e "${CYAN}${BOLD}[3/4] Checking Laya (optional)...${NC}"
+
+    # '-' not ':-': an explicitly empty LAYA_ADDRESS disables Laya, which is what
+    # the analysis service does with os.LookupEnv.
+    LAYA_ADDR="${LAYA_ADDRESS-http://localhost:8000}"
+
+    if [ -z "$LAYA_ADDR" ]; then
+        echo -e "${YELLOW}⚠ LAYA_ADDRESS is empty, attack categorization is disabled${NC}"
+        return 0
+    fi
+
+    if curl -s -f --max-time 3 "${LAYA_ADDR}/health" > /dev/null 2>&1; then
+        echo -e "${GREEN}✓ Laya is running at ${LAYA_ADDR}${NC}"
+        return 0
+    fi
+
+    echo -e "${YELLOW}⚠ Laya not running at ${LAYA_ADDR}${NC}"
+    echo -e "${YELLOW}  Events keep their heuristic category and no ATT&CK mapping.${NC}"
+    echo -e "${YELLOW}  Start it with: ${NC}scripts/setup-laya.sh install && LAYA_PRELOAD=1 scripts/setup-laya.sh start"
+    return 0
+}
+
 check_grpc_port() {
-    echo -e "${CYAN}${BOLD}[3/3] Checking gRPC availability...${NC}"
+    echo -e "${CYAN}${BOLD}[4/4] Checking gRPC availability...${NC}"
     
     GRPC_ADDR="${GRPC_ADDRESS:-localhost:9090}"
     
@@ -143,6 +166,7 @@ main() {
     
     check_elasticsearch
     check_ollama
+    check_laya
     check_grpc_port
     
     print_summary

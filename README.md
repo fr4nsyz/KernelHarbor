@@ -61,7 +61,12 @@ docker run -d --name elasticsearch -p 9200:9200 \
 # Start Ollama
 ollama serve
 ollama pull nomic-embed-text
-ollama pull qwen2.5:7b
+ollama pull qwen2.5:1.5b
+
+# Install and start Laya (optional, enables attack categorization)
+scripts/setup-laya.sh install
+LAYA_PRELOAD=1 scripts/setup-laya.sh start
+scripts/setup-laya.sh test
 ```
 
 ### Build
@@ -106,10 +111,11 @@ curl -X POST http://localhost:8080/analyze \
 1. **eBPF Tracers** hook kernel syscalls (`execve`, `open`, `connect`)
 2. **Ring buffer** passes events to user-space Go program
 3. **gRPC** sends events to analysis service
-4. **Elasticsearch** stores events with vector embeddings
-5. **Async workers** batch events and analyze with Ollama
-6. **Vector search** finds semantically similar past events
-7. **LLM** generates security verdict
+4. **Heuristics** categorise each event on ingest and map it to MITRE ATT&CK
+5. **Elasticsearch** stores events with vector embeddings
+6. **Async workers** batch events, classify unmatched ones with Laya, and analyze with Ollama
+7. **Vector search** finds semantically similar past events
+8. **LLM** generates security verdict
 
 ### Response Flow
 
@@ -163,6 +169,41 @@ Events are converted to behavior summaries for vector search:
 
 This allows finding **semantically similar attacks**, not just keyword matches.
 
+### Attack Categorization
+
+Every event carries an `attack.*` classification in `kb-events`:
+
+| Field | Description |
+|-------|-------------|
+| `attack.category` | Ad-hoc category — the rule that matched (`curl_pipe`, `credential_read`, `c2_default`, …) or the Laya category for unmatched events |
+| `attack.technique` | MITRE ATT&CK technique ID (`T1059.004`) |
+| `attack.technique_name` | Technique name (`Command and Scripting Interpreter: Unix Shell`) |
+| `attack.tactic` | Tactic (`execution`, `credential-access`, …, `benign`) |
+| `attack.source` | `rules`, `laya`, or a correlation chain name |
+| `attack.confidence` | Confidence from the matching rule or Laya |
+
+Classification runs in two places:
+
+1. **Heuristics, synchronously on ingest** — the rule engine and correlation chains
+   (`cmd/analysis/rules.go`, `cmd/analysis/correlator.go`) already know the category, and
+   `cmd/analysis/taxonomy.go` maps it to ATT&CK. This always happens, even without Laya.
+2. **Laya, asynchronously in the batch processor** — events that no rule could categorise
+   fall through to the self-hosted [Laya](https://laya-ai.com) decision model, which
+   speaks the Jev `/v1/systemone` protocol. Classification is two-stage: the model first
+   picks a tactic, then a specific category within that tactic. Each stage is gated on
+   its own `confidence`; below `LAYA_MIN_CONFIDENCE` the heuristic default is kept rather
+   than guessed at.
+
+Laya is a fast non-generative decision model, so this adds a typed label and a calibrated
+probability per event without waiting on the LLM. Ollama still runs the deeper batch
+analysis on the same events. The existing ad-hoc categories are preserved rather than
+replaced — `attack.category` stays as specific as the rule that produced it, and the
+ATT&CK fields are the normalisation layer on top.
+
+Keep choice sets small: the taxonomy caps every question at `MaxChoiceOptions` (16)
+options, and the two-stage split is what makes that possible while still covering the
+full tactic space.
+
 ## API Endpoints
 
 | Endpoint | Method | Description |
@@ -204,6 +245,11 @@ Response:
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | Ollama |
 | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Analysis model |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
+| `LAYA_ADDRESS` | `http://localhost:8000` | Laya decision server; set to empty to disable categorization |
+| `LAYA_API_KEY` | `` | Bearer token when the server sets `LAYA_API_KEY` |
+| `LAYA_MODEL` | `` | Pin a checkpoint (`english`, `multilingual`, `typed-decisions`) |
+| `LAYA_MIN_CONFIDENCE` | `0.5` | Minimum Laya confidence to trust a decision |
+| `LAYA_CONCURRENCY` | `4` | In-flight Laya classification requests |
 | `PROTOCOL` | `both` | HTTP protocol: `http`, `grpc`, or `both` |
 | `GRPC_ADDRESS` | `:9090` | gRPC server address |
 | `HTTP_ADDRESS` | `:8080` | HTTP server address |

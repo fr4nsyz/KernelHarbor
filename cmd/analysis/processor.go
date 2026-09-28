@@ -193,6 +193,9 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 
 	log.Printf("Analyzing batch for host %s with %d events", batch.HostName, len(batch.Events))
 
+	// 0. Typed attack classification for events no heuristic rule could categorise
+	bp.classifyEvents(ctx, batch)
+
 	// 1. Get embeddings for batch events
 	searchTexts := make([]string, 0, len(batch.Events))
 	for _, e := range batch.Events {
@@ -350,6 +353,40 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 		log.Printf("No Ollama client configured, skipping AI analysis")
 		log.Printf("Would analyze %d events for host %s", len(batch.Events), batch.HostName)
 	}
+}
+
+// classifyEvents runs Laya classification in parallel across the batch and persists
+// any refined ATT&CK classification back to the event document. Events Laya declined
+// to classify keep the category heuristics already assigned on ingest, so there is
+// nothing to write back.
+func (bp *BatchProcessor) classifyEvents(ctx context.Context, batch Batch) {
+	if !classifier.Enabled() {
+		return
+	}
+
+	var wg sync.WaitGroup
+	for i := range batch.Events {
+		if !needsClassification(batch.Events[i]) {
+			continue
+		}
+
+		wg.Add(1)
+		go func(event *Event) {
+			defer wg.Done()
+
+			classifier.Classify(ctx, event)
+
+			if event.CategorySource != CategorySourceLaya {
+				return
+			}
+			if esClientInstance != nil && event.EventID != "" {
+				if err := esClientInstance.UpdateCategories(ctx, event.EventID, *event); err != nil {
+					log.Printf("Failed to store attack category for %s: %v", event.EventID, err)
+				}
+			}
+		}(&batch.Events[i])
+	}
+	wg.Wait()
 }
 
 func hashHost(host string) int {

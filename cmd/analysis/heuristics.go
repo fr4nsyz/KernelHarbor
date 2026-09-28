@@ -24,6 +24,8 @@ func processEvent(event *Event) []Action {
 	processCache.RecordHeuristicScore(*event, result.Confidence)
 	correlator.Add(*event)
 
+	category := result.Category
+
 	if chain := correlator.Evaluate(event.ProcessGUID); chain != nil && chain.Score >= 0.6 {
 		log.Printf("Correlation chain detected for %s: score=%.2f verdict=%s chains=%v",
 			event.ProcessGUID, chain.Score, chain.Verdict, chain.ChainDesc)
@@ -31,8 +33,13 @@ func processEvent(event *Event) []Action {
 		if chain.Score > float64(result.Confidence) {
 			result.Confidence = float32(chain.Score)
 			result.Reason = fmt.Sprintf("correlated: %s", strings.Join(chain.Evidence, "; "))
+			if chain.Rule != "" {
+				category = chain.Rule
+			}
 		}
 	}
+
+	applyAttackTaxonomy(event, category, float64(result.Confidence), CategorySourceRules)
 
 	return result.Actions
 }

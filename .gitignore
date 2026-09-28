@@ -22,3 +22,6 @@ analysis.log
 
 # Benchmark results
 bench-results/
+
+# Self-hosted Laya virtualenv (scripts/setup-laya.sh install)
+.venv/

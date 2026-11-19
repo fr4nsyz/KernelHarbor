@@ -302,54 +302,41 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 		log.Printf("Analysis result for host %s: %s (%.2f) - %s",
 			batch.HostName, verdict, confidence, summary)
 
-		if verdict == "malicious" && confidence >= 0.7 {
-			flagged := map[string]bool{}
-			for _, id := range maliciousEvents {
-				flagged[id] = true
-			}
-			for _, e := range batch.Events {
-				// Only act on events the model explicitly flagged. When it
-				// flagged none, fall back to events carrying a heuristic or
-				// correlation signal; everything else is escalated to an alert
-				// instead of a kill.
-				if len(flagged) > 0 && !flagged[e.EventID] {
-					continue
-				}
-				if len(flagged) == 0 && !hasHeuristicSignal(&e) {
-					actionStore.Add(batch.HostName, Action{
-						ID:         generateEventID(),
-						Timestamp:  time.Now(),
-						HostName:   batch.HostName,
-						ActionType: ActionAlert,
-						Target:     killPIDTarget(e),
-						Reason:     fmt.Sprintf("AI analysis flagged batch as malicious (%.2f) but no event ids: %s", confidence, summary),
-					})
-					continue
-				}
-				actionStore.Add(batch.HostName, Action{
-					ID:         generateEventID(),
-					Timestamp:  time.Now(),
-					HostName:   batch.HostName,
-					ActionType: ActionKillPID,
-					Target:     killPIDTarget(e),
-					Reason:     fmt.Sprintf("AI analysis: %s (%.2f) - %s", verdict, confidence, summary),
-				})
-				if e.EventType == "connect" && e.RemoteAddr != "" {
-					actionStore.Add(batch.HostName, Action{
-						ID:         generateEventID(),
-						Timestamp:  time.Now(),
-						HostName:   batch.HostName,
-						ActionType: ActionBlockIP,
-						Target:     e.RemoteAddr,
-						Reason:     fmt.Sprintf("Malicious connection to %s:%d", e.RemoteAddr, e.RemotePort),
-					})
-				}
-			}
+		for _, a := range decideAIActions(batch, verdict, confidence, summary, maliciousEvents) {
+			actionStore.Add(batch.HostName, a)
 		}
 	} else {
 		log.Printf("No Ollama client configured, skipping AI analysis")
 		log.Printf("Would analyze %d events for host %s", len(batch.Events), batch.HostName)
 	}
+}
+
+// decideAIActions only emits ALERTs: LLM output is attacker-influenced, and KILL/BLOCK come from processEvent.
+func decideAIActions(batch Batch, verdict string, confidence float64, summary string, maliciousEvents []string) []Action {
+	if verdict != "malicious" || confidence < 0.7 {
+		return nil
+	}
+	flagged := map[string]bool{}
+	for _, id := range maliciousEvents {
+		flagged[id] = true
+	}
+
+	var out []Action
+	for i := range batch.Events {
+		e := &batch.Events[i]
+		if len(flagged) > 0 && !flagged[e.EventID] {
+			continue
+		}
+		out = append(out, Action{
+			ID:         generateEventID(),
+			Timestamp:  time.Now(),
+			HostName:   batch.HostName,
+			ActionType: ActionAlert,
+			Target:     killPIDTarget(*e),
+			Reason:     fmt.Sprintf("AI analysis (%.2f): %s", confidence, summary),
+		})
+	}
+	return out
 }
 
 func hashHost(host string) int {

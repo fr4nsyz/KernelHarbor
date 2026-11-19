@@ -37,20 +37,6 @@ func processEvent(event *Event) []Action {
 	return result.Actions
 }
 
-// hasHeuristicSignal reports whether an event trips a heuristic or
-// correlation rule without mutating any caches.
-func hasHeuristicSignal(event *Event) bool {
-	if processCache != nil {
-		if r := evaluateHeuristic(*event, processCache); r.Matched {
-			return true
-		}
-	}
-	if correlator != nil {
-		return correlator.Evaluate(event.ProcessGUID) != nil
-	}
-	return false
-}
-
 // parseGUIDStartTime extracts the process start-time (ns) suffix from a
 // process GUID of the form <host>-<pid>-<start_ns>. Hostnames may contain
 // dashes, so we only rely on the last two dash-separated segments.

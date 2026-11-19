@@ -854,7 +854,7 @@ func executeActions(actions []*pb.Action) {
 					log.Printf("ACTION BLOCK_IP %s: rule already present in %s", ip, chain)
 					continue
 				}
-				cmd := exec.Command("iptables", "-w", "5", "-A", chain, "-s", ip, "-j", "DROP")
+				cmd := exec.Command("iptables", "-w", "5", "-A", chain, iptablesAddrFlag(chain), ip, "-j", "DROP")
 				if out, err := cmd.CombinedOutput(); err != nil {
 					log.Printf("ACTION BLOCK_IP %s failed on %s: %v, output: %s", ip, chain, err, string(out))
 					ok = false
@@ -866,6 +866,8 @@ func executeActions(actions []*pb.Action) {
 				blockedIPs.Store(ip, true)
 				log.Printf("ACTION BLOCK_IP %s partially applied", ip)
 			}
+		case "ALERT":
+			log.Printf("ACTION ALERT target=%s (reason: %s)", a.Target, a.Reason)
 		default:
 			log.Printf("ACTION unknown type: %s", a.ActionType)
 		}
@@ -930,8 +932,16 @@ func absDiff64(a, b uint64) uint64 {
 	return b - a
 }
 
+// iptablesAddrFlag matches the remote peer: destination on OUTPUT, source on INPUT.
+func iptablesAddrFlag(chain string) string {
+	if chain == "OUTPUT" {
+		return "-d"
+	}
+	return "-s"
+}
+
 func iptablesRuleExists(chain, ip string) bool {
-	err := exec.Command("iptables", "-w", "5", "-C", chain, "-s", ip, "-j", "DROP").Run()
+	err := exec.Command("iptables", "-w", "5", "-C", chain, iptablesAddrFlag(chain), ip, "-j", "DROP").Run()
 	return err == nil
 }
 

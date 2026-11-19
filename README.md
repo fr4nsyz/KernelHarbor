@@ -14,7 +14,7 @@ Credits:
 
 ## Overview
 
-KernelHarbor captures system events (execve, open, network) using eBPF and analyzes them with an AI pipeline for threat detection and response. When malicious behavior is detected, it can automatically kill processes or block network connections.
+KernelHarbor captures system events (execve, open, network) using eBPF and analyzes them with an AI pipeline for threat detection and response. When deterministic heuristic or correlation rules detect malicious behavior, it can automatically kill processes or block network connections. AI verdicts only raise alerts.
 
 The demo below was done on the same device for simplicity. Analysis server ideally would run on a separate machine than the one running the agent.
 
@@ -117,14 +117,14 @@ Automatic response actions are delivered to the agent through two mechanisms:
 
 - **Immediate (heuristic)** — When the heuristic engine matches a known-bad pattern on ingest, an action is returned directly in the `IngestResponse` of the same RPC call. The agent executes it instantly — zero additional latency. Heuristic actions are returned inline only; they are **not** also stored for `FetchActions`, so the agent never executes them twice.
 
-- **Delayed (AI)** — After the async AI analysis completes (1-3s), if the verdict is malicious, an action is stored in memory. The agent polls `FetchActions(hostname)` every 5 seconds and executes any pending actions. `KILL_PID`/`BLOCK_IP` are only produced for events the model explicitly flagged (`malicious_events`); if none are flagged, events with a heuristic/correlation signal still get killed while the rest are escalated to `ALERT`.
+- **Delayed (AI)** — After the async AI analysis completes (1-3s), if the verdict is malicious with confidence >= 0.7, an `ALERT` is stored in memory for each event the model flagged (`malicious_events`), or for every event in the batch if it flagged none. The agent polls `FetchActions(hostname)` every 5 seconds. The AI never produces `KILL_PID` or `BLOCK_IP`: model output can be steered by attacker-controlled event data (command lines, file paths), so destructive actions come only from the deterministic heuristic and correlation rules.
 
 | Trigger | Latency | Action Examples |
 |---------|---------|----------------|
 | Heuristic match (high confidence) | Same RPC response | `KILL_PID`, `BLOCK_IP` |
 | Heuristic match (low confidence) | Same RPC response | `ALERT` |
 | Correlation chain detected | Same RPC response | `KILL_PID`, `BLOCK_IP` |
-| AI "malicious" verdict | ~5-8s (batch + poll) | `KILL_PID`, `BLOCK_IP`, `ALERT` |
+| AI "malicious" verdict | ~5-8s (batch + poll) | `ALERT` |
 
 The agent runs as root and executes actions using OS primitives: `SIGKILL` for process termination and `iptables` for IP blocking.
 
@@ -149,7 +149,7 @@ The analysis service exposes a gRPC API on port 9090 (configurable):
 |--------|-------------|
 | `Ingest` | Send events to the analysis pipeline, returns heuristic actions (`KILL_PID`, `BLOCK_IP`, or `ALERT`) |
 | `Analyze` | Query AI analysis for a specific event |
-| `FetchActions` | Poll for pending AI-derived actions (e.g., `KILL_PID`, `BLOCK_IP`) |
+| `FetchActions` | Poll for pending AI-derived actions (`ALERT`) |
 
 ### Behavior Embedding
 

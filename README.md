@@ -1,6 +1,6 @@
 # KernelHarbor
 
-Linux kernel security monitoring with eBPF and AI-powered analysis and automated response.
+Linux kernel security monitoring with eBPF, rule-based automated response, and LLM-assisted alerting.
 
 Credits:
 
@@ -14,7 +14,7 @@ Credits:
 
 ## Overview
 
-KernelHarbor captures system events (execve, open, network) using eBPF and analyzes them with an AI pipeline for threat detection and response. When deterministic heuristic or correlation rules detect malicious behavior, it can automatically kill processes or block network connections. AI verdicts only raise alerts.
+KernelHarbor captures system events (execve, open, connect) with eBPF and checks them against deterministic heuristic and correlation rules. When a rule matches, it can kill the process or block the connection. An LLM independently reviews events in batches to flag potential issues the rules didn't catch, and raises advisory ALERTs for human triage. It never kills or blocks.
 
 The demo below was done on the same device for simplicity. Analysis server ideally would run on a separate machine than the one running the agent.
 
@@ -61,7 +61,7 @@ docker run -d --name elasticsearch -p 9200:9200 \
 # Start Ollama
 ollama serve
 ollama pull nomic-embed-text
-ollama pull qwen2.5:7b
+ollama pull <model of choice>   # set OLLAMA_MODEL to match
 ```
 
 ### Build
@@ -105,11 +105,11 @@ curl -X POST http://localhost:8080/analyze \
 
 1. **eBPF Tracers** hook kernel syscalls (`execve`, `open`, `connect`)
 2. **Ring buffer** passes events to user-space Go program
-3. **gRPC** sends events to analysis service
-4. **Elasticsearch** stores events with vector embeddings
-5. **Async workers** batch events and analyze with Ollama
-6. **Vector search** finds semantically similar past events
-7. **LLM** generates security verdict
+3. **gRPC** sends events to the analysis service
+4. **Heuristic and correlation rules** run on ingest and return `KILL_PID` / `BLOCK_IP` / `ALERT` inline
+5. **Elasticsearch** stores events with behavior embeddings
+6. **Async workers** batch events per host and send them to Ollama, with process ancestry, correlation chains, and similar past events from the same host as context
+7. **LLM** returns an advisory verdict. Malicious with confidence >= 0.7 becomes an `ALERT`
 
 ### Response Flow
 
@@ -117,14 +117,14 @@ Automatic response actions are delivered to the agent through two mechanisms:
 
 - **Immediate (heuristic)** — When the heuristic engine matches a known-bad pattern on ingest, an action is returned directly in the `IngestResponse` of the same RPC call. The agent executes it instantly — zero additional latency. Heuristic actions are returned inline only; they are **not** also stored for `FetchActions`, so the agent never executes them twice.
 
-- **Delayed (AI)** — After the async AI analysis completes (1-3s), if the verdict is malicious with confidence >= 0.7, an `ALERT` is stored in memory for each event the model flagged (`malicious_events`), or for every event in the batch if it flagged none. The agent polls `FetchActions(hostname)` every 5 seconds. The AI never produces `KILL_PID` or `BLOCK_IP`: model output can be steered by attacker-controlled event data (command lines, file paths), so destructive actions come only from the deterministic heuristic and correlation rules.
+- **Delayed (AI)** — After a batch fills (100 events) or its timeout passes (30s by default), the LLM analyzes it. If the verdict is malicious with confidence >= 0.7, an `ALERT` is stored in memory for each event the model flagged (`malicious_events`), or for every event in the batch if it flagged none. The agent polls `FetchActions(hostname)` every 5 seconds. The AI never produces `KILL_PID` or `BLOCK_IP`: model output can be steered by attacker-controlled event data (command lines, file paths), so destructive actions come only from the deterministic heuristic and correlation rules.
 
 | Trigger | Latency | Action Examples |
 |---------|---------|----------------|
 | Heuristic match (high confidence) | Same RPC response | `KILL_PID`, `BLOCK_IP` |
 | Heuristic match (low confidence) | Same RPC response | `ALERT` |
 | Correlation chain detected | Same RPC response | `KILL_PID`, `BLOCK_IP` |
-| AI "malicious" verdict | ~5-8s (batch + poll) | `ALERT` |
+| AI "malicious" verdict | batch timeout + generation + up to 5s poll | `ALERT` |
 
 The agent runs as root and executes actions using OS primitives: `SIGKILL` for process termination and `iptables` for IP blocking.
 
@@ -161,7 +161,7 @@ Events are converted to behavior summaries for vector search:
 | `wget y \| sh` | `execve remote_code_execution image:wget` |
 | `echo 'YmFzaCAtYyAiY3VybCBodHRwOi8vZXZpbC5jb20i" \| base64 -d \| bash` | `execve encoded_command image:base64` |
 
-This allows finding **semantically similar attacks**, not just keyword matches.
+Similar past events from the same host are added to the prompt as context. They carry no verdict, so they show what has happened before on the host, not whether it was malicious.
 
 ## API Endpoints
 
@@ -202,7 +202,7 @@ Response:
 | `ES_ADDRESSES` | `http://localhost:9200` | Elasticsearch addresses |
 | `ES_INDEX` | `kb-events` | Events index |
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | Ollama |
-| `OLLAMA_MODEL` | `qwen2.5:1.5b` | Analysis model |
+| `OLLAMA_MODEL` | `qwen2.5:1.5b` | Analysis model. Set to your model of choice |
 | `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `PROTOCOL` | `both` | HTTP protocol: `http`, `grpc`, or `both` |
 | `GRPC_ADDRESS` | `:9090` | gRPC server address |

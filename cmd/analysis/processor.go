@@ -311,7 +311,7 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 
 	// 6. Run AI analysis
 	if ollamaClient != nil {
-		response, err := ollamaClient.Generate(ctx, prompt)
+		response, err := ollamaClient.Generate(ctx, analysisSystemPrompt, prompt)
 		if err != nil {
 			log.Printf("AI analysis failed: %v", err)
 			return

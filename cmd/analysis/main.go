@@ -315,7 +315,7 @@ func main() {
 		prompt := "Analyze this security event: " + req.Query + "\nIs this malicious? Answer in JSON format: {\"verdict\": \"benign|suspicious|malicious\", \"confidence\": 0.0-1.0, \"summary\": \"brief explanation\"}"
 		log.Printf("Prompt: %s", prompt)
 
-		response, err := ollamaClient.Generate(context.Background(), prompt)
+		response, err := ollamaClient.Generate(context.Background(), "", prompt)
 		if err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "generation failed: " + err.Error()})
 			return

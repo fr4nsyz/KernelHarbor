@@ -153,7 +153,7 @@ func (h *grpcHandler) Analyze(ctx context.Context, req *pb.AnalysisRequest) (*pb
 	prompt := "Analyze this security event: " + query + "\nIs this malicious? Answer in JSON format: {\"verdict\": \"benign|suspicious|malicious\", \"confidence\": 0.0-1.0, \"summary\": \"brief explanation\"}"
 	log.Printf("gRPC Analyze prompt: %s", prompt)
 
-	response, err := ollamaClient.Generate(ctx, prompt)
+	response, err := ollamaClient.Generate(ctx, "", prompt)
 	if err != nil {
 		log.Printf("Ollama generation failed: %v", err)
 		verdict := "benign"

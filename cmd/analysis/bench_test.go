@@ -528,7 +528,7 @@ func BenchmarkOllamaGeneration(b *testing.B) {
 	b.ResetTimer()
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
-		_, err := client.Generate(ctx, prompt)
+		_, err := client.Generate(ctx, "", prompt)
 		if err != nil {
 			b.Fatalf("Generate failed: %v", err)
 		}

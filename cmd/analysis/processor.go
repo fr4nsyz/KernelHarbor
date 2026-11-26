@@ -202,6 +202,7 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 
 	// 2. Retrieve similar past events for context
 	var similarEvents []Event
+	seenSimilar := map[string]bool{}
 	if ollamaClient != nil && esClientInstance != nil {
 		for i, text := range searchTexts {
 			if text == "" {
@@ -217,7 +218,13 @@ func (bp *BatchProcessor) analyzeBatch(batch Batch) {
 			if err != nil {
 				log.Printf("Failed to search similar events: %v", err)
 			} else {
-				similarEvents = append(similarEvents, similar...)
+				for _, s := range similar {
+					if s.EventID == "" || seenSimilar[s.EventID] {
+						continue
+					}
+					seenSimilar[s.EventID] = true
+					similarEvents = append(similarEvents, s)
+				}
 			}
 
 			// Persist the vector so later VectorSearch calls (and the

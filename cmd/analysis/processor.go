@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"strings"
 	"sync"
 	"time"
 )
@@ -70,7 +71,42 @@ func (bp *BatchProcessor) Stop() {
 	log.Println("Batch processor stopped")
 }
 
+var reviewOpenPrefixes = []string{"/etc/", "/root/", "/tmp/", "/var/tmp/", "/dev/shm/", "/var/spool/cron/", "/boot/"}
+
+var reviewOpenSkip = map[string]bool{
+	"/etc/ld.so.cache":   true,
+	"/etc/localtime":     true,
+	"/etc/nsswitch.conf": true,
+	"/etc/host.conf":     true,
+	"/etc/resolv.conf":   true,
+	"/etc/gai.conf":      true,
+	"/etc/locale.alias":  true,
+	"/etc/os-release":    true,
+}
+
+func worthLLMReview(e Event) bool {
+	if e.EventType != EventTypeOpen && e.EventType != EventTypeOpenat {
+		return true
+	}
+	p := e.FilePath
+	if reviewOpenSkip[p] {
+		return false
+	}
+	if strings.Contains(p, "/.ssh/") {
+		return true
+	}
+	for _, prefix := range reviewOpenPrefixes {
+		if strings.HasPrefix(p, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
 func (bp *BatchProcessor) Submit(event Event) {
+	if !worthLLMReview(event) {
+		return
+	}
 	select {
 	case bp.inputCh <- event:
 	case <-bp.ctx.Done():

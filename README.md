@@ -108,7 +108,7 @@ curl -X POST http://localhost:8080/analyze \
 3. **gRPC** sends events to the analysis service
 4. **Heuristic and correlation rules** run on ingest and return `KILL_PID` / `BLOCK_IP` / `ALERT` inline
 5. **Elasticsearch** stores events with behavior embeddings
-6. **Async workers** batch events per host and send them to Ollama, with process ancestry, correlation chains, and similar past events from the same host as context
+6. **Async workers** batch events per host and send them to Ollama (all `execve`/`connect`, but `open`/`openat` only for sensitive paths such as `/etc`, `/tmp`, `.ssh`), with process ancestry, correlation chains, and similar past events from the same host as context
 7. **LLM** returns an advisory verdict. Malicious with confidence >= 0.7 becomes an `ALERT`
 
 ### Response Flow

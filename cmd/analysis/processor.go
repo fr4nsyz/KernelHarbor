@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"hash/fnv"
 	"log"
 	"sync"
 	"time"
@@ -93,7 +94,7 @@ func (bp *BatchProcessor) batchAccumulator() {
 
 		for host, events := range hostBatches {
 			if force || len(events) > 0 {
-				workerID := hashHost(host) % len(bp.workers)
+				workerID := workerIndex(host, len(bp.workers))
 				select {
 				case bp.workers[workerID].inputCh <- Batch{
 					HostName:   host,
@@ -339,10 +340,8 @@ func decideAIActions(batch Batch, verdict string, confidence float64, summary st
 	return out
 }
 
-func hashHost(host string) int {
-	h := 0
-	for _, c := range host {
-		h = h*31 + int(c)
-	}
-	return h
+func workerIndex(host string, n int) int {
+	h := fnv.New32a()
+	h.Write([]byte(host))
+	return int(h.Sum32() % uint32(n))
 }

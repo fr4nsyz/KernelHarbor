@@ -37,7 +37,7 @@ gRPC on port 9090 (configurable via `GRPC_ADDRESS`)
 |----------|---------|-----------|
 | `ES_ADDRESSES` | `http://localhost:9200` | analysis |
 | `OLLAMA_ADDRESS` | `http://localhost:11434` | analysis |
-| `OLLAMA_MODEL` | `qwen2.5:7b` | analysis |
+| `OLLAMA_MODEL` | `qwen2.5:1.5b` | analysis |
 | `GRPC_ADDRESS` | `:9090` | analysis/agent |
 | `GRPC_AUTH_TOKEN` | `` | analysis/agent (shared secret - set same on both sides) |
 | `HTTP_ADDRESS` | `:8080` | analysis |
